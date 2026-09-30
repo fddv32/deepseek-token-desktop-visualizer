@@ -4,7 +4,9 @@
 //   1. 按配置装载/卸载插件（providers/ 下的独立模块），把结果汇总成 snapshot；
 //   2. 把「显示在桌宠信息条上的字段」编排成一个有序列表（fields）—— 每个字段的
 //      label / value / unit / tone 全在这边算好，渲染端只负责画；
-//   3. 把每次扣费翻译成受击等级（level），渲染端只认 level。
+//   3. 把每次扣费定成一个受击**档位**（level：weak / normal / critical）并配好
+//      「-多少」那句文案，渲染端只认这两个 —— 至于每个档位播哪一段动画，
+//      是用户在设置里排的名单（shared/triggers.js），这边不管。
 //
 // 配置在 usage.json：
 //   {
@@ -36,7 +38,7 @@ const CTX_LIMIT = Number(process.env.WHALEPET_CTX_LIMIT) > 0 ? Number(process.en
 // 默认全装（等价于迁移前的行为）：装是装了，但只有 DEFAULT_FIELDS 里的才会挂到信息条上。
 // 卸载过的插件下次启动不会自己装回来 —— 那是用户的明确选择。
 const DEFAULT_INSTALLED = { workbuddy: true, dsh: true, codex: true, claude: true, zcode: true }
-const DEFAULT_FIELDS = ['today', 'ctx', 'workbuddy', 'dsh']
+const DEFAULT_FIELDS = ['today', 'ctx', 'workbuddy', 'wbcache', 'dsh']
 
 function loadConfig() {
   let raw = {}
@@ -64,21 +66,106 @@ function saveConfig(patch) {
   return config
 }
 
-/* ---------- 受击等级 ----------
- * 各来源量纲不同，阈值也各不相同：WorkBuddy 的积分单笔约 0.8；DSH 的 cost 是人民币，
- * 单笔约 0.002~0.006；Codex / Claude / ZCode 报的是 token，单笔常见 1~8 万。
- * 所以阈值由**插件自己**在 meta.damage 里声明（[[下限, 等级], ...]，从高到低），
- * 编排层不再维护一张按来源 id 写死的表 —— 加插件不用改这里。
+/* ---------- 一笔账显示成什么 ----------
+ * 「用多少扣多少」：每个来源照**它自己的量纲**报账 —— WorkBuddy 报积分、DSH 报人民币、
+ * Codex / Claude / ZCode 报 token。编排层不换算、不累计，只把这一笔的数值和单位
+ * 排成一句能直接飘在鱼身上的文案。
+ *
+ * 为什么不折算成统一量纲：折算要一张价目表，而价目表是**会跟实际账单脱节的**。
+ * 真实花费账本里本来就写好了（DSH 的 cost 是它自己按峰谷价算出来的），
+ * 再折一遍只会多出第二套口径 —— 用户想知道的是「花了多少积分 / 多少钱」，
+ * 不是按某个默认单价估出来的数。
  */
-const DEFAULT_DAMAGE = [[1, 'pain-normal']]
+
+/** 去掉「0.090」这种尾巴上的零，小数字读起来才干净。 */
+function trimZero(s) {
+  return s.indexOf('.') < 0 ? s : s.replace(/\.?0+$/, '')
+}
+
+/**
+ * 数字部分的格式。小额必须看得见小数：DSH 一笔调用就是 ¥0.004 上下，
+ * 粗一档就只剩「<0.001」，等于把「用多少扣多少」这句话抹掉了。
+ */
+function fmtHit(amount) {
+  const v = Number(amount)
+  if (!Number.isFinite(v) || v <= 0) return '0'
+  if (v >= 1000) return trimZero(v.toFixed(1))
+  if (v >= 1) return trimZero(v.toFixed(2))
+  if (v >= 0.001) return trimZero(v.toFixed(3))
+  return '<0.001'
+}
+
+/**
+ * 「-」后面那半句：数值 + 小字单位。
+ *   credit -> 0.09（积分）      WorkBuddy 的 credit 就是积分本身
+ *   CNY    -> ¥0.004            DSH / 手动记账记的是人民币
+ *   token  -> 1.2万（token）    其余来源只报 token
+ * 渲染端拿到就直接画，不做任何格式化 —— 和 fields 一个道理。
+ */
+function hitOf(amount, unit) {
+  if (unit === 'CNY') return { hitValue: '¥' + fmtHit(amount), hitUnit: '' }
+  if (unit === 'credit') return { hitValue: fmtHit(amount), hitUnit: '积分' }
+  return { hitValue: fmtTokens(amount), hitUnit: 'token' }
+}
+
+/* ---------- 受击档位 ----------
+ * 各来源量纲不同，阈值也就各不相同：WorkBuddy 的积分单笔约 0.09~0.5；DSH 的 cost 是
+ * 人民币，单笔约 0.002~0.012；Codex / Claude / ZCode 报的是 token，单笔常见 1~8 万。
+ * 所以阈值由**插件自己**在 meta.damage 里声明（[[该来源量纲的下限, 档位], ...]，从高到低），
+ * 编排层不维护一张按来源 id 写死的表 —— 加插件不用改这里。
+ */
+
+/* 档位（tier）：这笔账算轻、算中、还是算重。
+ *
+ * 它是**档位，不是动作名**。以前这里直接返回 'pain-weak' / 'pain-normal' /
+ * 'critical' —— 那正好也是动作 id，于是「多大的账播哪一段」被写死在代码里：想让
+ * 大额扣费换个动作，只能改代码。现在这里只说「这笔算重的」，渲染端再去「扣费反应」
+ * 名单里取第 3 个动作，而名单是用户在设置里排的（见 shared/triggers.js）。
+ *
+ * 档位比动作少一层：金额只分三档，名单里有几个就用几个 —— 名单只剩两个动作时，
+ * 最重的那笔用最后一个（见 renderer/pet.js 的 hitClipFor）。这样删动作不会让
+ * 「暴击」突然没反应。
+ */
+const TIERS = ['weak', 'normal', 'critical']
+
+/* 老插件里写的是动作名，这里认。用户自己写的插件不该因为我们改了内部命名就静默失灵。 */
+const TIER_ALIAS = { 'pain-weak': 'weak', 'pain-normal': 'normal' }
+
+function tierOf(name) {
+  const t = TIER_ALIAS[name] || name
+  // 认不出来就当中等：比默默降成「轻」（看起来像没反应）更接近原意，也不至于崩
+  return TIERS.indexOf(t) >= 0 ? t : 'normal'
+}
+
+const DEFAULT_DAMAGE = [[1, 'normal']]
 
 function damageLevel(amount, table) {
   const rules = (table && table.length ? table : DEFAULT_DAMAGE)
   const amt = Number(amount) || 0
   for (const [min, level] of rules) {
-    if (amt >= min) return level
+    if (amt >= min) return tierOf(level)
   }
-  return 'pain-weak'
+  return 'weak' // 连表里最低一档都没到
+}
+
+/**
+ * 给每条账配上「-多少」的文案。
+ *
+ * **一笔一个，不合并、不累计。** 这是刻意的：一轮采集常常带回来十几条记录
+ * （一次用户回合会产生很多段模型调用），把它们加成一个数虽然好读，但看到的是
+ * 「-3.5」，看不到底下其实是 0.3、0.1、0.1…… 那一串真实的扣费。
+ * 用户想看的就是后者的节奏感，所以这里只如实逐条排版，拥挤的问题交给渲染端
+ * （它会把这些数字排成队一个一个飘出来，见 renderer/pet.js）。
+ *
+ * 唯一做的整理是补上缺省的 `unit`（没报量纲的按 token 算），别让渲染端拿到 undefined。
+ */
+function decorateEvents(events) {
+  const out = []
+  for (const ev of events) {
+    const unit = ev.unit || 'token'
+    out.push({ ...ev, unit, ...hitOf(ev.amount, unit) })
+  }
+  return out
 }
 
 /* ---------- 格式化（注入给插件，也用于核心字段） ---------- */
@@ -95,7 +182,9 @@ function fmtTokens(n) {
 function fmtAmount(n) {
   const v = Number(n)
   if (!Number.isFinite(v) || v <= 0) return '0'
-  if (v >= 100) return v.toFixed(0)
+  // 小数一定要留着：信息条上这个数字是用来「看着它一笔一笔往上爬」的，
+  // 取整会让每次 0.1 的变动完全消失（138.97 显示成 139，看着像没动过）。
+  if (v >= 1000) return v.toFixed(1)
   if (v >= 1) return v.toFixed(2)
   return v.toFixed(3)
 }
@@ -392,8 +481,32 @@ function fieldCatalog() {
   return out
 }
 
+/**
+ * 单独造一笔账：定受击档位 + 配好「-多少」的文案。
+ *
+ * 正常路径在 poll() 里内联做（那儿本来就拿着 def / inst）。这个函数是给
+ * 「不经过插件、要手工造一笔账」的场景用的（验收用的伪扣费 WHALEPET_FAKE_HIT）——
+ * 关键是它和真实路径**走同一套口径**，否则验收验的是另一条代码。
+ */
+function eventOf(id, amount, unit) {
+  const hit = instances.get(id)
+  const meta = hit ? hit.def.meta : null
+  const amt = Number(amount) || 0
+  const u = unit || (meta && meta.unit) || 'credit'
+  return {
+    amount: amt,
+    unit: u,
+    ...hitOf(amt, u),
+    level: damageLevel(amt, meta && meta.damage),
+  }
+}
+
 function publicConfig() {
-  return { installed: { ...config.installed }, fields: config.fields.slice(), catalog: fieldCatalog() }
+  return {
+    installed: { ...config.installed },
+    fields: config.fields.slice(),
+    catalog: fieldCatalog(),
+  }
 }
 
 function setFields(ids) {
@@ -406,7 +519,8 @@ function setFields(ids) {
 
 /**
  * 采一次。返回 { snapshot, events }。
- * events 是本次轮询新出现的用量事件，供渲染端播放受击动画。
+ * events 是本次轮询新出现的用量账，**一笔一条**（不合并），每条都带着受击档位
+ * 和「-多少」的文案，供渲染端播动画 + 逐笔飘数字。
  */
 function poll(now) {
   const ts = Number.isFinite(now) ? now : Date.now()
@@ -416,8 +530,12 @@ function poll(now) {
     for (const [id, { def, inst }] of instances) {
       try {
         inst.poll(ts, ev => {
-          const level = damageLevel(ev.amount, def.meta.damage)
-          events.push({ ...ev, source: ev.source || id, level })
+          // 只定等级：数字和单位原样留着，由主进程排版成「-多少」（见 decorateEvents）。
+          events.push({
+            ...ev,
+            source: ev.source || id,
+            level: damageLevel(ev.amount, def.meta.damage),
+          })
         })
       } catch { /* 单个插件崩了不影响桌宠 */ }
     }
@@ -478,7 +596,7 @@ function poll(now) {
     },
   }
 
-  return { snapshot, events }
+  return { snapshot, events: decorateEvents(events) }
 }
 
 /* ---------- 导出 ---------- */
@@ -502,6 +620,14 @@ module.exports = {
   CTX_LIMIT,
   DISABLED,
   dshPricePeakHours,
+  // 一笔账的显示与轻重（单笔文案，不累计）
+  hitOf,
+  fmtHit,
+  damageLevel,
+  TIERS,
+  tierOf,
+  decorateEvents,
+  eventOf,
   // 设置面板
   listProviders,
   installProvider,
@@ -510,5 +636,4 @@ module.exports = {
   publicConfig,
   setFields,
   reload,
-  balanceSupported: () => !BALANCE_DISABLED,
 }

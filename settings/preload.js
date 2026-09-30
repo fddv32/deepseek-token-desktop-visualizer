@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld('settings', {
   setScale: scale => ipcRenderer.invoke('settings:scale', scale),
   setSkin: id => ipcRenderer.invoke('settings:skin', id),
   setAlwaysOnTop: on => ipcRenderer.invoke('settings:ontop', on),
+  // 动作：改某个时机（什么时候播）的名单 —— 传整份新数组（增 / 删 / 排序都是它，
+  // 主进程负责收拾干净）；以及「试演」（不改配置，只让桌面上的桌宠立刻播一次）
+  setTrigger: (slot, ids) => ipcRenderer.invoke('settings:trigger', slot, ids),
+  previewAction: id => ipcRenderer.invoke('settings:preview', id),
   // 信息条字段
   setFields: ids => ipcRenderer.invoke('settings:fields', ids),
   // 插件

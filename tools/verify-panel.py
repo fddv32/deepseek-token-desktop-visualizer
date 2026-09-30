@@ -5,8 +5,9 @@
 抓屏得自己算窗口坐标，本机 150% DPI 下 GetWindowRect 和实际像素对不上，
 而且透明窗口背后的桌面会污染像素统计。capturePage 直接返回窗口像素，与坐标无关。
 
-设置窗口那部分是两段：a 段测外观（大小/形象）并把「手动记账」字段加到信息条上（截图取证），
-b 段再摘掉、卸载/安装插件、重载插件，逐项断言。跑完 usage.json / config.json 会恢复原样。
+设置窗口那部分是三段：a 段测外观（大小/形象）并把「手动记账」字段加到信息条上（截图取证），
+b 段再摘掉、卸载/安装插件、重载插件，c 段在动作页里挪动作（去掉 / 加回 / 排序 / 试演）。
+跑完 usage.json / config.json 会恢复原样。
 
 用法：python tools/verify-panel.py
 产出：tools/capture-*.png、settings-window.png、settings-selftest-a/b.png、
@@ -56,8 +57,15 @@ env["WHALEPET_REPORT"] = "1"
 env["WHALEPET_CAPTURE"] = "1"
 env["WHALEPET_CAPTURE_MS"] = "4500"
 env["WHALEPET_FAKE_HIT"] = "3.5"
+# 一次伪造 8 笔（0.1、0.2 … 0.8），模拟「一次日志落盘带回来十几条记录」。
+# 这是在验收**逐笔飘字**：抓到的 capture-hit.png 里应当是一串大小不一的数字，
+# 而不是一个加起来的合计。把它设成 1 就退回「单笔」的老样子。
+env["WHALEPET_FAKE_BURST"] = "8"
 env["WHALEPET_FAKE_HIT_AT"] = "9000"
-env["WHALEPET_FAKE_LEVEL"] = "critical"
+# 不设 WHALEPET_FAKE_LEVEL：一批 8 笔里最重的是 0.8 积分（>= 0.5）= critical 档，
+# 所以受击动画照旧验的是「扣费反应」名单里第 3 个动作；而飘字保留各自的大小差异
+# （0.1 normal 档 / 0.8 critical 档），截图里一眼能看出「数字是一笔一笔的、轻重不同」，
+# 这比全部强制成同一档更有说服力。
 env["WHALEPET_OPEN_SETTINGS"] = "1"
 env["WHALEPET_PANEL_SELFTEST"] = "1"
 
@@ -137,17 +145,18 @@ wait_for(lambda s: stepname(s) == "settings:auto-open", 30, "settings:auto-open"
 wait_for(lambda s: stepname(s) == "capture:saved" and isinstance(s, dict) and s.get("name") == "settings-window.png",
          30, "settings-window.png")
 
-print("等设置窗口点击自检（a 段 / b 段）…")
-wait_for(lambda s: stepname(s) == "settings:selftest" and isinstance(s, dict) and s.get("phase") == "a",
-         60, "settings:selftest a")
-wait_for(lambda s: stepname(s) == "settings:selftest" and isinstance(s, dict) and s.get("phase") == "b",
-         60, "settings:selftest b")
-wait_for(lambda s: stepname(s) == "capture:saved" and isinstance(s, dict) and s.get("name") == "settings-selftest-b.png",
-         30, "settings-selftest-b.png")
-wait_for(lambda s: stepname(s) == "capture:saved" and isinstance(s, dict) and s.get("name") == "bar-with-manual.png",
-         30, "bar-with-manual.png")
-wait_for(lambda s: stepname(s) == "capture:saved" and isinstance(s, dict) and s.get("name") == "bar-restored.png",
-         30, "bar-restored.png")
+print("等设置窗口点击自检（a / b / c 三段）…")
+# 三段是**串起来**跑的（verify-hooks.js 里 a.then(b).then(c)），
+# 所以必须等到最后一段的图落盘再收工 —— 早先只等到 b 就 terminate，
+# c（动作试演）根本没机会跑，报告里明明没有却看着像「通过」。
+for phase in ("a", "b", "c"):
+    wait_for(lambda s, p=phase: stepname(s) == "settings:selftest" and isinstance(s, dict) and s.get("phase") == p,
+             60, "settings:selftest " + phase)
+for shot in ("settings-selftest-a.png", "bar-with-manual.png",
+             "settings-selftest-b.png", "bar-restored.png",
+             "settings-selftest-c.png", "action-preview.png"):
+    wait_for(lambda s, f=shot: stepname(s) == "capture:saved" and isinstance(s, dict) and s.get("name") == f,
+             30, shot)
 
 p.terminate()
 try:
@@ -189,9 +198,12 @@ for s in steps():
 print()
 print("=== 设置窗口点击自检 ===")
 total = ok = 0
+PHASES = ("a", "b", "c")
+seen_phases = []
 for s in steps():
     if not (isinstance(s, dict) and s.get("step") == "settings:selftest"):
         continue
+    seen_phases.append(str(s.get("phase")))
     print("  ── " + str(s.get("phase")) + " 段 ──")
     for r in s.get("results", []):
         total += 1
@@ -202,21 +214,46 @@ for s in steps():
 errs = [s for s in steps() if isinstance(s, dict) and s.get("step") == "settings:selftest-error"]
 for e in errs:
     print("  !! 自检脚本出错：" + json.dumps(e, ensure_ascii=False))
-print("  小计：%d/%d 通过" % (ok, total))
+missing = [p for p in PHASES if p not in seen_phases]
+if missing:
+    # 「某一段没跑」必须当成失败：否则少跑一段、剩下的全过，看着反而是绿灯
+    print("  !! 这几段没跑：%s（报告里只有 %s）" % ("、".join(missing), "、".join(seen_phases) or "无"))
+    timeouts.append("selftest phases " + ",".join(missing))
+elif len(seen_phases) != len(PHASES):
+    # 段数比 3 多 = 这一轮里设置窗口被**重建**过，自检链从头又跑了一遍，
+    # 报告里于是混着两条链的步骤（实测出现过 a、b、a、b、c 这种）。
+    # 成因是验收期间有人真的在桌面上操作：点/拖桌宠、把设置窗口关掉再打开。
+    # 必须当失败 —— 这时「53/53」只是两遍里各挑了一遍的结果，
+    # 而你想从这份报告里知道的是「这一轮到底验了什么」。
+    print("  !! 自检跑了 %d 段（应为 %d）：%s"
+          % (len(seen_phases), len(PHASES), "、".join(seen_phases)))
+    print("     多半是验收期间设置窗口被重建了（有人点了桌宠 / 关了又开设置窗口）。关掉手，重跑一次。")
+    timeouts.append("selftest phases duplicated")
+print("  小计：%d/%d 通过（%d/%d 段）" % (ok, total, len(seen_phases), len(PHASES)))
 
 print()
 print("=== 抓到的图 ===")
-from PIL import Image  # noqa: E402
+bad = []
+try:
+    from PIL import Image  # noqa: E402
+except ImportError:
+    # PIL 只用来量一下图片尺寸 —— 缺了它不该让整轮验收算失败，
+    # 但也不能装作看过了：明确说「没验」并记进 bad。
+    Image = None
+    bad.append("没装 Pillow，图片只列不验（pip install pillow 后可验证尺寸）")
+    print("  ! 没装 Pillow：只列出抓到的图，不验尺寸")
 
 # 只认**本轮报告里记过的** capture:saved —— 不去扫目录「看剩下什么」，
 # 那样上一轮遗留的文件会被当成这一轮的成果，明明没抓到也显示通过。
 saved = [s for s in steps() if isinstance(s, dict) and s.get("step") == "capture:saved"]
-bad = []
 if not saved:
     bad.append("本轮一张图都没抓到")
 for s in saved:
     name = str(s.get("name"))
     full = os.path.join(TOOLS, name)
+    if Image is None:
+        print("  %-28s %.1f KB" % (name, os.path.getsize(full) / 1024 if os.path.exists(full) else -1))
+        continue
     try:
         im = Image.open(full)
         im.load()

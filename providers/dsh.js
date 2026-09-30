@@ -17,13 +17,18 @@ const meta = {
   badge: 'DSH',
   builtin: true,
   unit: 'token',
+  // 面板上按 token 显示（和其余来源一个口径），但**这一笔账是人民币** ——
+  // 账本里本来就带着按峰谷价算好的 cost，所以受击和飘字都用元，不折算。
   paths: ['~/.dsh/data/dsh-token-monitor/usage.jsonl'],
   desc: '读 dsh-token-monitor 的明文账本（含按峰谷价算好的 cost）',
   fields: [
     { id: 'dsh', label: 'DSH 今日', unit: 'token', desc: 'DSH 今日的 token 用量（花费见悬停明细）' },
     { id: 'balance', label: 'DeepSeek 余额', desc: '联网查一次官方 /user/balance' },
   ],
-  damage: [[0.012, 'critical'], [0.004, 'pain-normal']],
+  // 受击阈值，单位**人民币** —— 这个插件 emit 的账就是 cost（元），
+  // 单位在事件里写明了，编排层原样用，所以「用多少扣多少」飘出来的就是 ¥ 数字。
+  // 一次调用约 ¥0.004 上下，0.012 算暴击。
+  damage: [[0.012, 'critical'], [0.004, 'normal']],
 }
 
 function create(api) {

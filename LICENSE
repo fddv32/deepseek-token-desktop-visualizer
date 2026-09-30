@@ -22,7 +22,6 @@ SOFTWARE.
 
 ---
 
-注意：本仓库的**形象素材**（`assets/whale-girl/`）来自
-[dsh-damage-pulse](https://github.com/wssfk12138/dsh-damage-pulse) 插件，
-`assets/ciallo/` 基于用户提供的角色图程序化生成，二者的授权请以原始来源为准，
-不自动适用于上面的 MIT 条款。
+注意：本仓库的**形象素材**（`assets/shayu/`）由用户提供的角色图出发、经 AI 生成四张原始姿态
+再程序化合成全部动画帧（详见 README「素材说明」）。这部分素材的授权请以素材提供方为准，
+不自动适用于上面的 MIT 条款。桌宠代码本身仍为上方的 MIT。

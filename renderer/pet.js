@@ -5,8 +5,10 @@
 //   system —— #pet 加 .drag-region（-webkit-app-region: drag），窗口移动交给系统。
 //             代价是这块区域可能收不到鼠标事件，交互判定要与之配合。
 //
-// 素材只用原插件同一套、经过验证的帧；顶层那批 `*-hands.png` 是原插件清单里没引用的
-// 废弃素材，单独播放会像「两个头」，这里一律不碰。
+// 动画片段全部由主进程下发的动作清单（main.js 的 ACTIONS）现搭：每个动作带
+// ms（每帧多久）和 frames（帧），**什么时候播**则由另一份时机名单决定
+// （main.js 的 TRIGGERS -> groups.triggers，见 shared/triggers.js）。
+// 这个文件里不写任何具体动作名，也不决定「双击播哪个」。
 'use strict'
 
 // 渲染端的异常默认是「静默」的：脚本一抛错就整段停摆，桌面上的表现只是
@@ -28,14 +30,21 @@ let assetRoot = ''
 let dragMode = 'poll'
 let useDragPose = false
 
-// 疼痛反馈的帧时长（对齐原插件 1250ms 的 half/close/reopen 节奏）
-const PAIN_MS = [150, 470, 70, 100, 80, 80]
-// 摸头的开心反馈：闭眼 -> 笑眯眯 -> 睁眼
-const HAPPY_MS = [155, 825, 80, 85]
+// 动作清单由主进程下发（见 main.js 的 ACTIONS）。渲染端**不认识任何具体动作名**，
+// 只有两处例外：
+//   * 受击档位（weak / normal / critical）按位置去「扣费反应」名单里取动作
+//   * 「试演」是按 id 点名
+// 所以加动作、改「什么时候播哪个」都不用动这个文件。
+//
+// pools 是「时机 -> 能播的动作 id 列表」，整份来自主进程：
+//   blink 偶尔眨眼（随机一个）· idle 待机随机（按权重）· click 双击（随机一个）
+//   pet 单击摸摸（随机一个）· hit 扣费反应（**有序**，按档位取第 N 个）
+let pools = { blink: [], idle: [], click: [], pet: [], hit: [] }
+let idlePool = [] // 待机随机：带权重的 { id, weight }
 
 let current = null // { name, index, frameStartedAt }
 let nextBlinkAt = 0
-let nextActingAt = 0
+let nextExtraAt = 0
 let isDragging = false
 
 function fileUrl(rel) {
@@ -48,44 +57,73 @@ function firstOf(rels) {
   return Array.isArray(rels) && rels.length > 0 ? rels[0] : undefined
 }
 
+/**
+ * 「一组相对路径 + 每帧时长」拼成帧表。
+ * ms 给数组就逐帧用（长度不够时沿用最后一个），给数字就整段统一。
+ */
 function toFrames(rels, ms) {
   const list = Array.isArray(rels) ? rels : []
-  return list.map(rel => ({ url: fileUrl(rel), ms: ms || 160 }))
+  const per = Array.isArray(ms) ? ms : null
+  const flat = per ? (per[per.length - 1] || 160) : (ms || 160)
+  return list.map((rel, i) => ({ url: fileUrl(rel), ms: per ? (per[i] || flat) : flat }))
 }
 
-function withDurations(rels, durations) {
-  const list = Array.isArray(rels) ? rels : []
-  const fallback = durations[durations.length - 1] || 160
-  return list.map((rel, index) => ({ url: fileUrl(rel), ms: durations[index] || fallback }))
-}
-
+/**
+ * 按主进程下发的清单建片段 + 建各时机的池子。
+ *
+ * 片段名**就是动作 id**，这样「试演」可以直接按 id 点名，受击也能按名字查。
+ * 但**播哪个**不看名字（名字里没有任何语义），看主进程给的那份名单：
+ * 名单里放了谁，那个时机就会轮到谁。
+ *
+ * 没进任何名单的动作照样建片段（不建的话设置里的「试演」对没在用的动作就失灵了），
+ * 只是没有任何池子会挑到它。
+ */
 function buildClips(groups) {
   assetRoot = groups.assetRoot || ''
   const s = groups.states || {}
+  const actions = Array.isArray(groups.actions) ? groups.actions : []
+  const tr = groups.triggers || {}
 
-  const defs = {
-    idle: { frames: toFrames(groups.idle, 160), loop: true },
-    blink: { frames: toFrames(groups.blink, 140), loop: false, next: 'idle' },
-    acting: { frames: toFrames(groups.acting, 170), loop: false, next: 'idle' },
-    revive: { frames: toFrames(groups.revive, 340), loop: false, next: 'idle' },
-    critical: {
-      frames: [
-        ...toFrames(groups.criticalSeq, 260),
-        ...(firstOf(s.painCombo) ? [{ url: fileUrl(firstOf(s.painCombo)), ms: 500 }] : []),
-      ],
-      loop: false,
-      next: 'idle',
-    },
-    'pain-weak': { frames: withDurations(groups.painWeak, PAIN_MS), loop: false, next: 'idle' },
-    'pain-normal': { frames: withDurations(groups.painNormal, PAIN_MS), loop: false, next: 'idle' },
-    happy: { frames: withDurations(groups.happySeq, HAPPY_MS), loop: false, next: 'idle' },
+  clips.clear()
+  idlePool = []
+  pools = { blink: [], idle: [], click: [], pet: [], hit: [] }
+
+  const idle = toFrames(groups.idle, 160)
+  if (idle.length > 0) clips.set('idle', { frames: idle, loop: true })
+
+  // 名单先过一遍：换形象时名单里可能还留着这个素材里没有的动作，那就当它不存在 ——
+  // 池子里放一个播不了的名字，用户看到的只是「点了没反应」，比报错还难查。
+  const known = new Set(actions.map(a => a.id))
+  const list = slot => (Array.isArray(tr[slot]) ? tr[slot] : []).filter(id => known.has(id))
+
+  // 「扣费反应」是**有序**名单（从轻到重），最重的那笔用最后一个动作。
+  // 暴击的尾巴（末帧定格一张「连续受击」的样子）挂在这个「最重的档」上，
+  // 而不是挂在某个叫 critical 的动作上 —— 用户把那一档换成别的动作，尾巴要跟着走。
+  const hitIds = list('hit')
+  const heaviestHit = hitIds[hitIds.length - 1]
+
+  for (const a of actions) {
+    const frames = toFrames(a.frames, a.ms)
+    if (frames.length === 0) continue
+    if (a.id === heaviestHit && firstOf(s.painCombo)) {
+      frames.push({ url: fileUrl(firstOf(s.painCombo)), ms: 500 })
+    }
+    clips.set(a.id, { frames, loop: false, next: 'idle' })
   }
+
+  // 池子要等片段建完再筛一遍：上面只保证「名单里的动作有素材」，
+  // 这里保证「真的建出了片段」（一张帧的动作不会建）。
+  const pool = slot => list(slot).filter(id => clips.has(id))
+  const weightOf = new Map(actions.map(a => [a.id, Math.max(1, a.weight || 1)]))
+  pools.blink = pool('blink')
+  pools.click = pool('click')
+  pools.pet = pool('pet')
+  pools.hit = pool('hit')
+  pools.idle = pool('idle')
+  idlePool = pools.idle.map(id => ({ id, weight: weightOf.get(id) || 1 }))
+
   const dragged = useDragPose ? firstOf(s.draggedIdle) : undefined
-  if (dragged) defs.drag = { frames: [{ url: fileUrl(dragged), ms: 1000 }], loop: true }
-
-  for (const [name, def] of Object.entries(defs)) {
-    if (def.frames.length > 0) clips.set(name, def)
-  }
+  if (dragged) clips.set('drag', { frames: [{ url: fileUrl(dragged), ms: 1000 }], loop: true })
 
   for (const def of clips.values()) {
     for (const frame of def.frames) {
@@ -93,6 +131,39 @@ function buildClips(groups) {
       img.src = frame.url
     }
   }
+}
+
+/** 从池子里随机挑一个（空池子返回空串）。 */
+function pickFrom(ids) {
+  return ids.length ? ids[Math.floor(Math.random() * ids.length)] : ''
+}
+
+/* 受击档位 -> 名单里的第几个。档位是金额算出来的轻重，和动作名无关。 */
+const TIER_INDEX = { weak: 0, normal: 1, critical: 2 }
+
+/**
+ * 这一档该播哪个动作。
+ *
+ * 档位只有三档，名单里有几个就用几个 —— 名单短了（用户把「暴击」删了），
+ * 最重的那笔就用最后一个动作。这样删动作不会让大额扣费变成「没反应」。
+ */
+function hitClipFor(tier) {
+  if (pools.hit.length === 0) return ''
+  const i = TIER_INDEX[tier] === undefined ? 0 : TIER_INDEX[tier]
+  return pools.hit[Math.min(i, pools.hit.length - 1)]
+}
+
+/** 待机小动作池里按权重随机挑一个。池子空了返回空串。 */
+function pickIdleExtra() {
+  if (idlePool.length === 0) return ''
+  let total = 0
+  for (const it of idlePool) total += it.weight
+  let r = Math.random() * total
+  for (const it of idlePool) {
+    r -= it.weight
+    if (r <= 0) return it.id
+  }
+  return idlePool[idlePool.length - 1].id
 }
 
 function playClip(name) {
@@ -104,8 +175,11 @@ function playClip(name) {
 }
 
 function scheduleIdleExtras(now) {
-  if (clips.has('blink')) nextBlinkAt = now + 2800 + Math.random() * 4200
-  if (clips.has('acting')) nextActingAt = now + 18000 + Math.random() * 37000
+  // 眨眼排得密（两三秒一次，像呼吸）；随机小动作排得稀（十几秒到四十秒一次），
+  // 否则桌宠会一刻不停地扭，看着烦而不是「活」。
+  // 池子空就不排 —— 排了也是每几秒醒来一次白跑一遍。
+  nextBlinkAt = pools.blink.length > 0 ? now + 2800 + Math.random() * 4200 : 0
+  nextExtraAt = idlePool.length > 0 ? now + 14000 + Math.random() * 26000 : 0
 }
 
 function advance(now) {
@@ -138,11 +212,12 @@ function resumeIdle(now) {
 function tick(now) {
   if (current && current.name === 'idle' && !isDragging) {
     if (nextBlinkAt && now >= nextBlinkAt) {
-      playClip('blink')
+      playClip(pickFrom(pools.blink))
       nextBlinkAt = 0
-    } else if (nextActingAt && now >= nextActingAt) {
-      playClip('acting')
-      nextActingAt = 0
+    } else if (nextExtraAt && now >= nextExtraAt) {
+      const id = pickIdleExtra()
+      if (id) playClip(id)
+      nextExtraAt = 0
     }
   }
   advance(now)
@@ -161,7 +236,7 @@ function enterDragging() {
   if (isDragging) return
   isDragging = true
   petImg.classList.add('dragging')
-  // 默认不切「拎起帧」：那套 idle-hands 姿势在桌宠尺寸下会被看成两个头。
+  // 不切「拎起帧」：这一版形象没有专门的被拎素材，drag 片段建不出来。
   // 拖动期间保持待机循环（tick 里会暂停眨眼/小动作），视觉上干净。
   if (useDragPose && clips.has('drag')) playClip('drag')
 }
@@ -219,8 +294,10 @@ petImg.addEventListener('mousedown', e => {
     resetDownState()
     petImg.classList.remove('dragging')
     isDragging = false
-    if (clips.has('happy')) {
-      playClip('happy')
+    // 双击播哪个由「双击」名单决定，随机挑一个 —— 名单空了就什么都不播
+    const id = pickFrom(pools.click)
+    if (id) {
+      playClip(id)
       scheduleIdleExtras(performance.now() + 1200)
     }
     return
@@ -276,8 +353,11 @@ window.addEventListener('mouseup', e => {
     if (clickTimer) return
     clickTimer = setTimeout(() => {
       clickTimer = null
-      const name = Math.random() < 0.6 ? 'pain-weak' : 'pain-normal'
-      playClip(clips.has(name) ? name : 'idle')
+      // 单击「摸摸」：播哪个由「单击摸摸」名单决定，随机挑一个；名单空了就不反应。
+      // 默认名单借的是最轻的两档扣费反应 —— 这一版形象没有专门的「被摸」素材。
+      const id = pickFrom(pools.pet)
+      if (!id) return
+      playClip(id)
       scheduleIdleExtras(performance.now() + 1200)
     }, 260)
   }
@@ -287,6 +367,72 @@ petImg.addEventListener('contextmenu', e => {
   e.preventDefault()
   window.whalePet.openMenu(e.clientX, e.clientY)
 })
+
+/* ---------- 扣费数字（用多少扣多少） ---------- */
+
+const hitLayer = document.getElementById('hit')
+
+/**
+ * 每一笔账一个数字，主进程**不合并**（见 usage.js 的 decorateEvents）——
+ * 所以这里要负责「怎么放」：排成队，一个出场完了再放下一个。
+ *
+ * 为什么必须排队：一次落盘常带十几条记录，同一瞬间全糊上去就只剩一团红字，
+ * 什么都读不出来。隔 HIT_GAP_MS 放一个，看到的是一串 0.3、0.1、0.1……
+ * 一笔一笔往下走 —— 这正是「钱在流出去」的样子。
+ *
+ * 它们是**竖着叠**的（CSS 里 flex-end 锚在鱼身上，新的从下面顶上来），
+ * 所以不存在「两个数字撞在一起」的问题，也不需要横向错位。
+ *
+ * 节拍交给 shared/hitpacing.js —— 它只认时间、不碰 DOM，所以能被假时钟测出来。
+ * 交给它的原因在那边写了：一次落盘回来的十几笔是**同一瞬间**到的，节拍必须挂在
+ * 「上一次出场的时间」上，挂在「队列还剩没剩」上是无效的（每笔到场时队列都是空的）。
+ */
+const HIT_GAP_MS = 170
+// 队列上限只防极端情况（一次 flush 回来几千条）把 DOM 堆爆。溢出时丢**最旧**的
+// 并在控制台说一声 —— 丢的只是飘字，信息条上的「今日已用」该是多少还是多少。
+const HIT_QUEUE_MAX = 40
+
+const hitQueue = []
+
+function popHit(ev) {
+  const el = document.createElement('span')
+  // 字号只跟**金额档位**走（critical 那档写大一号），跟播哪段动画无关 ——
+  // 所以用户把「暴击」那段换掉，数字该大还是大。
+  el.className = 'hit-num' + (ev.level === 'critical' ? ' big' : '')
+  el.textContent = '-' + ev.hitValue
+  if (ev.hitUnit) {
+    const u = document.createElement('i')
+    u.className = 'u'
+    u.textContent = ev.hitUnit
+    el.append(u)
+  }
+  hitLayer.append(el)
+  // 动画 .95s（和 pet.css 的 hit-in 对齐，也就是它被下一批顶上去之前的一整段），
+  // 多留 150ms 余量再摘，免得动画没播完元素就没了。
+  // 摘的是**自己**：flex-end 下从栈顶（最旧的那行）消失，底下的行不会跳。
+  setTimeout(() => el.remove(), 1100)
+}
+
+const hitPacer = HitPacing.createPacer({
+  gap: HIT_GAP_MS,
+  now: () => performance.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: id => clearTimeout(id),
+  hasPending: () => hitQueue.length > 0,
+  onEmit: () => popHit(hitQueue.shift()),
+})
+
+function queueHit(ev) {
+  // 金额是 0 的账（比如只记了 token 没记钱的手动记账）不飘 —— 飘一个「-0」更糟
+  if (!ev || !ev.hitValue || ev.hitValue === '0') return
+  hitQueue.push(ev)
+  while (hitQueue.length > HIT_QUEUE_MAX) {
+    const drop = hitQueue.shift()
+    console.warn('[whalepet] 飘字排队超过 ' + HIT_QUEUE_MAX + ' 笔，丢掉最旧的一笔 -' + drop.hitValue
+      + '（今日已用的合计不受影响）')
+  }
+  hitPacer.arm()
+}
 
 /* ---------- 用量信息条 ---------- */
 
@@ -358,7 +504,9 @@ let pendingRank = 0
 let hitTimer = null
 let idleTimer = null
 
-const HIT_RANK = { 'pain-weak': 1, 'pain-normal': 2, critical: 3 }
+// 同一波里连着来好几笔时，只播最重的那一次 —— 比较用的就是这个档位序号。
+// （值取自 TIER_INDEX，别再抄一遍数字，否则改档位表时这里会被漏掉。）
+const HIT_RANK = { weak: TIER_INDEX.weak + 1, normal: TIER_INDEX.normal + 1, critical: TIER_INDEX.critical + 1 }
 
 function markActive() {
   usageBox.classList.remove('idle')
@@ -372,11 +520,15 @@ function onUsageEvent(ev) {
   usageBox.classList.add('pulse')
   setTimeout(() => usageBox.classList.remove('pulse'), 900)
 
-  const level = ev && ev.level ? ev.level : 'pain-weak'
+  // 数字**立刻**进队，不等下面那个 320ms 的合并窗口：它是「这笔账花了多少」的收据，
+  // 拖不拖动、有没有动画可播，都跟它没关系。（排队只是错开出场时间，见 queueHit。）
+  queueHit(ev)
+
+  const tier = ev && ev.level ? ev.level : 'weak'
   // 同一波里常连着来好几笔，只播最重的那一次，否则动画会被反复打断
-  if (!pendingHit || (HIT_RANK[level] || 0) > pendingRank) {
-    pendingHit = level
-    pendingRank = HIT_RANK[level] || 0
+  if (!pendingHit || (HIT_RANK[tier] || 0) > pendingRank) {
+    pendingHit = tier
+    pendingRank = HIT_RANK[tier] || 0
   }
   if (hitTimer) clearTimeout(hitTimer)
   hitTimer = setTimeout(() => {
@@ -388,13 +540,17 @@ function onUsageEvent(ev) {
     // 这几条「静默跳过」以前什么都不说，动画不播就只能靠猜。改成明确告警，
     // 配合 WHALEPET_REPORT=1 会进 startup-report.json 的 renderer:console。
     if (isDragging) { console.warn('[whalepet] 受击动画跳过：正在拖动'); return }
-    if (!clips.has(lv)) {
-      console.warn('[whalepet] 受击动画跳过：没有 ' + lv + ' 片段（已加载：' + Array.from(clips.keys()).join(',') + '）')
+    // 档位 -> 动作：名单里没有能播的就直说（多半是用户在设置里把它清空了）
+    const id = hitClipFor(lv)
+    if (!id) {
+      console.warn('[whalepet] 受击动画跳过：扣费反应名单里没有能播的动作（档位 ' + lv
+        + '，已加载：' + Array.from(clips.keys()).join(',') + '）')
       return
     }
-    // 正在播受击就让它播完，别互相盖
-    if (current && (current.name === 'critical' || String(current.name).indexOf('pain') === 0)) return
-    playClip(lv)
+    // 正在播受击就让它播完，别互相盖 —— 「是不是受击动作」问的是名单，
+    // 不是名字里有没有 pain（名字里没有语义）
+    if (current && pools.hit.indexOf(current.name) >= 0) return
+    playClip(id)
     scheduleIdleExtras(performance.now() + 1400)
   }, 320)
 }
@@ -405,10 +561,31 @@ window.whalePet.onDragMode(applyDragMode)
 window.whalePet.onUsage(renderUsage)
 window.whalePet.onUsageEvent(onUsageEvent)
 
-window.whalePet.listFrames().then(groups => {
-  useDragPose = groups.dragPose === true
-  applyDragMode(groups.dragMode)
-  buildClips(groups)
-  resumeIdle(performance.now())
-  requestAnimationFrame(tick)
+/**
+ * 拉素材、重建片段。设置里开关动作时主进程会通知（actions-changed），走的是同一条路。
+ *
+ * 重建会把 clips 清空，正播着的那一段可能已经被关掉了 —— 所以统一回待机，
+ * 不让它卡在一个已经没有帧的片段上。
+ */
+function loadClips() {
+  return window.whalePet.listFrames().then(groups => {
+    useDragPose = groups.dragPose === true
+    applyDragMode(groups.dragMode)
+    buildClips(groups)
+    resumeIdle(performance.now())
+  })
+}
+
+window.whalePet.onActionsChanged(() => { loadClips() })
+
+// 设置里点「试演」：立刻播一次。播完 advance() 自己会回待机并重排定时器。
+window.whalePet.onPreviewAction(id => {
+  if (!clips.has(id)) {
+    console.warn('[whalepet] 试演跳过：没有 ' + id + ' 片段（已加载：' + Array.from(clips.keys()).join(',') + '）')
+    return
+  }
+  playClip(id)
+  scheduleIdleExtras(performance.now() + 1400)
 })
+
+loadClips().then(() => requestAnimationFrame(tick))

@@ -2,7 +2,7 @@
 #
 # 输入：
 #   - 用户反馈截图（image-cache 里的原图）
-#   - 素材 assets/whale-girl/idle-hands.png（旧版拖动姿态）
+#   - 拖动姿态素材（若存在：assets/shayu/states/drag.png）
 #   - 验收器 tools/drag-verify.py 产出的 tools/ab/result-<tag>.json（每张截图都带窗口矩形）
 # 输出：
 #   - tools/fix-evidence.png
@@ -160,16 +160,19 @@ def main():
     u = Image.open(USER_SHOT).convert("RGB")
     u_crop = u.crop(USER_BOX)
     shown = contain(u_crop, CELL_W, CELL_H)
-    hands = Image.open(os.path.join(ROOT, "assets", "whale-girl", "idle-hands.png")).convert("RGBA")
-    hands = hands.crop(alpha_bbox(hands))
-    hands = on_checker(contain(hands, CELL_W, CELL_H))
+    # 旧版那张拖动姿态素材已随旧形象一并删除；找到替代姿态就贴上来对照，找不到只留用户截图。
+    cells = [(shown, "你的截图 · 桌宠区域")]
+    for rel in (("assets", "shayu", "states", "drag.png"),):
+        cand = os.path.join(ROOT, *rel)
+        if os.path.exists(cand):
+            hands = Image.open(cand).convert("RGBA")
+            hands = hands.crop(alpha_bbox(hands))
+            cells.append((on_checker(contain(hands, CELL_W, CELL_H)), "拖动姿态素材 %s（同一张图）" % os.path.basename(cand)))
+            break
     groups.append(
         (
-            "① 你看到的「拖动变形」＝ 旧版把姿态换成了 idle-hands.png（俯身双手前伸，缩小后像两个头）",
-            [
-                (shown, "你的截图 · 桌宠区域"),
-                (hands, "素材 idle-hands.png（同一张图）"),
-            ],
+            "① 你看到的「拖动变形」＝ 旧版把姿态换成了一张俯身双手前伸的素材（缩小后像两个头）",
+            cells,
         )
     )
 

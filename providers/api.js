@@ -9,6 +9,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { spawn } = require('child_process')
 
 const HOME = os.homedir()
 const BJ_OFFSET_MS = 8 * 60 * 60 * 1000
@@ -169,6 +170,130 @@ function rollDay(now, state, onNewDay) {
   return day
 }
 
+/* ---------- SQLite（借 WorkBuddy 自带的 Node） ---------- */
+
+/**
+ * 找一个能 require('node:sqlite') 的 node 可执行文件。
+ *
+ * 桌宠自己跑在 Electron 33 里，内置的是 Node 20 —— 而 node:sqlite 要 Node 22.5+，
+ * 所以本进程读不了 SQLite（WorkBuddy 自带的 better-sqlite3 又是按别的 ABI 编的，
+ * NODE_MODULE_VERSION 对不上，require 会直接抛）。
+ *
+ * 但 WorkBuddy 会在 ~/.workbuddy/binaries/node/versions/<版本>/ 下放它自己用的 Node，
+ * 版本够新，借它起一个一次性子进程就能读 —— 不引入任何原生模块，也不用把路径
+ * 写死在某一台机器上：找不到就当没有，调用方自己降级。
+ *
+ * 结果缓存：一个进程生命周期内只扫一次目录。
+ */
+let nodeBinCache // undefined=还没找过；''=确认没有
+function findNodeBin() {
+  if (nodeBinCache !== undefined) return nodeBinCache
+  nodeBinCache = ''
+  const root = path.join(HOME, '.workbuddy', 'binaries', 'node', 'versions')
+  let names = []
+  try {
+    names = fs.readdirSync(root, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+  } catch {
+    return nodeBinCache
+  }
+  // 版本号倒序：node:sqlite 是 22.5 才有的，优先挑最新的那个
+  const rank = s => s.split(/[.\-+_]/).map(n => parseInt(n, 10) || 0)
+  names.sort((a, b) => {
+    const va = rank(a), vb = rank(b)
+    for (let i = 0; i < 3; i++) if (va[i] !== vb[i]) return vb[i] - va[i]
+    return 0
+  })
+  const exe = process.platform === 'win32' ? 'node.exe' : 'node'
+  for (const n of names) {
+    const full = path.join(root, n, exe)
+    try {
+      if (fs.statSync(full).isFile()) { nodeBinCache = full; break }
+    } catch { /* 继续看下一个版本 */ }
+  }
+  return nodeBinCache
+}
+
+/**
+ * 子进程里跑的小程序：从 stdin 读一条 SQL，把结果按 JSON 吐到 stdout。
+ * SQL 走 stdin 而不是拼进命令行，省掉所有引号 / 反斜杠转义问题。
+ */
+const SQLITE_SCRIPT = [
+  "const { DatabaseSync } = require('node:sqlite')",
+  "let sql = ''",
+  "process.stdin.setEncoding('utf8')",
+  "process.stdin.on('data', d => { sql += d })",
+  "process.stdin.on('end', () => {",
+  "  let out",
+  "  try {",
+  "    const db = new DatabaseSync(process.env.WB_SQLITE_DB, { readOnly: true })",
+  "    const rows = db.prepare(sql).all()",
+  "    db.close()",
+  "    out = { ok: true, rows }",
+  "  } catch (e) {",
+  "    out = { ok: false, error: String((e && e.message) || e).slice(0, 300) }",
+  "  }",
+  "  process.stdout.write(JSON.stringify(out))",
+  "})",
+].join('\n')
+
+/** 本机能不能读 SQLite。不能的话调用方趁早放弃，别每轮白起进程。 */
+function hasNodeSqlite() {
+  return !!findNodeBin()
+}
+
+/**
+ * 只读跑一条 SQL，**异步**返回行数组；任何失败都 resolve(null)，从不 reject。
+ *
+ * 之所以异步：子进程启动约 30~60ms，同步等会把 Electron 主进程卡住（桌宠的
+ * 定时器、气泡、窗口都跟着顿一下）。异步的话这一轮拿不到就下一轮用。
+ *
+ * @param {string} dbPath SQLite 文件路径
+ * @param {string} sql    只允许单条查询
+ * @returns {Promise<object[]|null>}
+ */
+function sqliteQuery(dbPath, sql) {
+  return new Promise(resolve => {
+    const exe = findNodeBin()
+    if (!exe) return resolve(null)
+    let child
+    try {
+      child = spawn(exe, ['-e', SQLITE_SCRIPT], {
+        env: { ...process.env, WB_SQLITE_DB: dbPath },
+        stdio: ['pipe', 'pipe', 'ignore'],
+        windowsHide: true,
+      })
+    } catch {
+      return resolve(null)
+    }
+    let out = ''
+    let settled = false
+    let timer = null
+    const done = v => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(v)
+    }
+    timer = setTimeout(() => {
+      try { child.kill() } catch { /* 早就退出了 */ }
+      done(null)
+    }, 5000)
+    child.stdout.on('data', d => { out += d })
+    child.on('error', () => done(null))
+    child.on('close', () => {
+      try {
+        const r = JSON.parse(out)
+        done(r && r.ok ? r.rows : null)
+      } catch {
+        done(null)
+      }
+    })
+    try { child.stdin.end(sql) } catch { done(null) }
+  })
+}
+
 /* ---------- 目录扫描 ---------- */
 
 /**
@@ -267,6 +392,8 @@ module.exports = {
   Tailer,
   TailSet,
   rollDay,
+  hasNodeSqlite,
+  sqliteQuery,
   UNIT_LABEL,
   withUnit,
 }

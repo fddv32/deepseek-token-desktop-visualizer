@@ -9,22 +9,51 @@
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
-  <header>
-    <h1>设置</h1>
-    <p>外观、信息条上显示什么、启用哪些数据源</p>
-  </header>
+  <!-- 左侧导航栏。
+       原来是「一页往下滚」：外观 → 桌宠上显示 → 动作 → 数据源插件 → 关于。
+       五段里只有一段是你现在要看的，剩下四段都在滚动条底下 —— 找「动作」得先滚过
+       整个字段列表。改成一栏一项、一项一页：点谁看谁。
+
+       计数徽标（5 项 / 8/8 / 6/6）挂在导航项上而不是各页标题里：
+       一栏扫下去就知道每一页现在是什么状态，不用逐页翻。
+       id 保持 #field-count / #action-count / #plugin-count 不变 ——
+       渲染端那三处赋值一行都不用改。 -->
+  <aside class="nav">
+    <div class="brand">鲸鱼娘桌宠</div>
+
+    <button class="nav-item" data-page="look">外观</button>
+
+    <button class="nav-item" data-page="fields">
+      桌宠上显示<span id="field-count" class="nav-count"></span>
+    </button>
+
+    <button class="nav-item" data-page="actions">
+      动作<span id="action-count" class="nav-count"></span>
+    </button>
+
+    <button class="nav-item" data-page="plugins">
+      数据源插件<span id="plugin-count" class="nav-count"></span>
+    </button>
+
+    <button class="nav-item" data-page="about">关于</button>
+
+    <!-- 版本号钉在栏底：一栏的下半截本来是空的，收一条版本进去正好。
+        刻意**不叫** id="version" —— 那个 id 在「关于」页里，重复 id 会让
+        自检脚本的 getElementById 拿到错的那个。 -->
+    <div class="nav-foot"><span id="nav-ver"></span></div>
+  </aside>
 
   <main>
     <!-- ① 外观：大小 / 形象 / 置顶。原来在右键菜单里，挪进来之后菜单只剩三项。 -->
-    <section>
+    <section class="page" id="page-look">
       <div class="sec-head"><h2>外观</h2></div>
 
       <div class="opt">
         <span class="k">大小</span>
         <div class="seg" id="scale">
           <button data-scale="0.7">小</button>
-          <button data-scale="1">中</button>
-          <button data-scale="1.4">大</button>
+          <button data-scale="0.9">中</button>
+          <button data-scale="1.1">大</button>
         </div>
         <span class="grow"></span>
         <span class="hint" id="scale-hint"></span>
@@ -47,10 +76,9 @@
     </section>
 
     <!-- ② 桌宠上显示 -->
-    <section>
+    <section class="page" id="page-fields">
       <div class="sec-head">
         <h2>桌宠上显示</h2>
-        <span id="field-count" class="count"></span>
         <span class="grow"></span>
         <span class="hint">＋ 添加 · ↑ ↓ 排序 · × 移除</span>
       </div>
@@ -66,11 +94,25 @@
       <div id="field-off" class="chips"></div>
     </section>
 
-    <!-- ③ 数据源插件 -->
-    <section>
+    <!-- ③ 动作：形象里能播的动画，按「什么时候播」分组。
+         时机表和动作表都在主进程（shared/triggers.js + main.js 的 ACTIONS），
+         这里只画 —— 所以加动作、改默认搭配都不用动这个文件。 -->
+    <section class="page" id="page-actions">
+      <div class="sec-head">
+        <h2>动作</h2>
+        <span class="grow"></span>
+        <span class="hint">点胶囊上的名字让桌宠立刻演一次</span>
+      </div>
+      <p class="sec-note">待机呼吸是底子，一直在。下面每个时机里放谁，谁就在那个时候播；
+        点「×」把这个动作从这个时机里拿掉（别的时机里还有就照旧），右边下拉可以再加进来。
+        一个动作都不在任何时机里 = 关掉它。</p>
+      <div id="actions" class="trig-list"></div>
+    </section>
+
+    <!-- ④ 数据源插件 -->
+    <section class="page" id="page-plugins">
       <div class="sec-head">
         <h2>数据源插件</h2>
-        <span id="plugin-count" class="count"></span>
         <span class="grow"></span>
         <button id="btn-dir" class="ghost" title="打开用户插件目录 ~/.whalepet/providers">插件目录</button>
         <button id="btn-reload" class="ghost" title="重新扫描并加载 providers/ 目录">重载插件</button>
@@ -80,8 +122,8 @@
       <div id="plugin-errors" class="errors hidden"></div>
     </section>
 
-    <!-- ④ 关于 -->
-    <section>
+    <!-- ⑤ 关于 -->
+    <section class="page" id="page-about">
       <div class="sec-head"><h2>关于</h2></div>
       <div class="about">
         <div class="about-title">
@@ -93,8 +135,8 @@
         <ul class="notes">
           <li><b>左键单击</b>摸摸（随机反应）· <b>双击</b>开心跳跃 · <b>按住拖动</b>拎起来移动</li>
           <li><b>右键</b>桌宠或底部信息条 → 菜单（置顶 / 本设置窗口 / 退出）</li>
-          <li>每笔模型调用到达时，鲸鱼娘会按金额轻重受击：轻痛 → 普通痛 → 暴击</li>
-          <li>形象素材来自 <code>dsh-damage-pulse</code> 插件；交互设计参考 <code>LorisYounger/VPet</code></li>
+          <li>每笔模型调用到达时，傻鱼会按这笔账的金额轻重受击：轻痛 → 普通痛 → 暴击，
+            同时在它身上飘出一个「<b>-多少</b>」—— <b>一笔一个</b>，用多少积分就扣多少，DSH 花的是人民币就飘 ¥</li>
           <li>所有插件都<b>只读</b>日志：不写任何文件、不改原插件目录</li>
           <li>DeepSeek 余额需联网查一次官方接口，Key 只从 <code>DEEPSEEK_API_KEY</code> 或
             <code>~/.dsh/.credentials.yaml</code> 读取，不写盘、不外发</li>
@@ -103,7 +145,7 @@
         </ul>
         <div class="sub">数据源</div>
         <div id="about-sources" class="sources"></div>
-        <div class="cfg">配置文件：<code>config.json</code>（位置 / 大小 / 置顶 / 形象）、<code>usage.json</code>（插件装没装 / 显示哪些字段）</div>
+        <div class="cfg">配置文件：<code>config.json</code>（位置 / 大小 / 置顶 / 形象 / 动作开关）、<code>usage.json</code>（插件装没装 / 显示哪些字段）</div>
       </div>
     </section>
   </main>

@@ -22,7 +22,9 @@ const meta = {
   paths: ['~/.claude/projects'],
   desc: '读 assistant 行的 message.usage（含 cache_creation / cache_read）',
   fields: [{ id: 'claude', label: 'Claude 今日', unit: 'token' }],
-  damage: [[60000, 'critical'], [20000, 'pain-normal']],
+  // 阈值单位是这个来源自己的量纲（token）：单次 2 万算普通痛、6 万算暴击。
+  // 编排层不换算，飘在鱼身上的就是这个 token 数。
+  damage: [[60000, 'critical'], [20000, 'normal']],
 }
 
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000

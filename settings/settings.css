@@ -1,4 +1,4 @@
-/* 用量面板 —— 配色取自鲸鱼娘本体（藏青头发 / 藕荷蓝蝴蝶结 / 冰白围裙 / 金腰饰），
+/* 用量面板 —— 配色取自傻鱼本体（藏青头发 / 藕荷蓝蝴蝶结 / 冰白围裙 / 金腰饰），
    做成和桌宠同一套观感的浅色界面。
    刻意不用深色：面板是「打开来看一眼」的窗口，浅色更像手机里那些养成类 App，
    和桌宠上那条冰白信息条也是同一族。 */
@@ -32,46 +32,106 @@ html, body {
 
 body {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   overflow: hidden;
   background:
-    radial-gradient(680px 300px at 10% -6%, #ffffff 0%, rgba(255, 255, 255, 0) 62%),
+    radial-gradient(680px 300px at 78% -6%, #ffffff 0%, rgba(255, 255, 255, 0) 62%),
     linear-gradient(180deg, #f3f8ff 0%, #e5eefc 100%);
 }
 
-/* ---------- 顶部 ---------- */
+/* ---------- 左侧导航栏 ---------- */
 
-header {
-  flex: 0 0 auto;
-  padding: 13px var(--pad-x) 12px;
+.nav {
+  flex: 0 0 154px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 13px 10px 14px;
+  overflow-y: auto;
   color: #fff;
-  border-radius: 0 0 18px 18px;
+  /* 原来是压在顶部的一条横幅渐变，现在竖过来当导航栏底色 —— 观感没换，位置换了 */
   background:
-    radial-gradient(320px 120px at 88% 0%, rgba(255, 255, 255, .34) 0%, rgba(255, 255, 255, 0) 70%),
-    linear-gradient(135deg, #7d9ee0 0%, #5578c4 52%, #82a6e6 100%);
-  box-shadow: 0 6px 18px rgba(70, 105, 180, .28);
+    radial-gradient(240px 160px at 90% -10%, rgba(255, 255, 255, .34) 0%, rgba(255, 255, 255, 0) 72%),
+    linear-gradient(160deg, #7d9ee0 0%, #5578c4 56%, #82a6e6 100%);
+  box-shadow: 4px 0 16px rgba(70, 105, 180, .24);
 }
+/* 导航项最多六行，正常情况下不会出现滚动条；真出现了也别给栏里再加一条 */
+.nav::-webkit-scrollbar { width: 0; }
 
-h1 {
-  margin: 0;
-  font-size: 15px;
+.nav .brand {
+  padding: 0 7px 11px;
+  font-size: 13.5px;
   font-weight: 700;
   letter-spacing: .4px;
   text-shadow: 0 1px 2px rgba(40, 70, 140, .35);
 }
 
-header p {
-  margin: 3px 0 0;
-  font-size: 11.5px;
-  color: rgba(255, 255, 255, .84);
+.nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+  /* 盖掉全局 button 的胶囊外观：导航项是「一条」，不是「一颗」 */
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, .9);
+  padding: 7px 9px;
+  font-size: 12.5px;
+  transition: background .15s, color .15s;
+}
+/* 和 h2 前面那颗小菱形呼应：选中的那颗更亮，一眼知道自己在哪一页 */
+.nav-item::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 6px; height: 6px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: .42;
+  transform: rotate(45deg);
+  transition: opacity .15s;
+}
+.nav-item:hover { background: rgba(255, 255, 255, .18); color: #fff; }
+.nav-item.on {
+  background: rgba(255, 255, 255, .95);
+  color: var(--accent-2);
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(30, 55, 120, .26);
+}
+.nav-item.on::before { opacity: 1; }
+
+/* 计数徽标：一栏扫下去就知道每一页现在是什么状态，不用逐页翻 */
+.nav-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .24);
+  color: #fff;
+}
+.nav-count:empty { display: none; }
+.nav-item.on .nav-count { background: var(--accent-soft); color: var(--accent-2); }
+
+/* margin-top:auto 把它顶到栏底 —— 一栏的下半截本来是空的 */
+.nav-foot {
+  margin-top: auto;
+  padding: 10px 7px 0;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .72);
+  letter-spacing: .3px;
 }
 
 /* ---------- 主体 ---------- */
 
 main {
   flex: 1 1 auto;
+  min-width: 0;
   overflow-y: auto;
-  padding: 2px var(--pad-x) 20px;
+  padding: 14px var(--pad-x) 20px;
 }
 main::-webkit-scrollbar { width: 9px; }
 main::-webkit-scrollbar-thumb {
@@ -82,7 +142,11 @@ main::-webkit-scrollbar-thumb {
 }
 main::-webkit-scrollbar-thumb:hover { background: #9db9e4; background-clip: padding-box; }
 
-section { margin-top: 15px; }
+/* ---------- 页面（一栏一项，一项一页） ----------
+   页是互斥显示的，所以这里**不能**再写 `section { margin-top }`：
+   一页就是整屏内容，上面那截留白由 main 的 padding 给。 */
+.page { display: none; }
+.page.on { display: block; }
 
 .sec-head {
   display: flex;
@@ -91,9 +155,15 @@ section { margin-top: 15px; }
   margin-bottom: 8px;
 }
 
+/* 这一段就是本页的标题，比原来的小节标题大一档 */
+.page > .sec-head {
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--line);
+}
+
 h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: 14.5px;
   font-weight: 700;
   color: var(--ink);
   display: flex;
@@ -115,14 +185,8 @@ h2::before {
 .sub { margin: 12px 0 6px; font-size: 12px; color: var(--ink-2); }
 .sec-note { margin: -3px 0 8px; font-size: 11px; color: var(--ink-3); }
 
-.count {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--accent-2);
-  background: var(--accent-soft);
-  border-radius: 999px;
-  padding: 1px 8px;
-}
+/* 各页的计数徽标已经挪到导航项上（见上面的 .nav-count），
+   原来那条 .count 规则随之删掉 —— 留着就是没人用的死样式。 */
 
 /* ---------- 按钮 ---------- */
 
@@ -517,3 +581,109 @@ button.uninstall:hover { color: var(--bad); border-color: #f0c8ca; background: #
   transition: opacity .2s, transform .2s;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---------- 动作：按时机分组 ---------- */
+
+.trig-list { display: flex; flex-direction: column; gap: 9px; margin-top: 9px; }
+
+.trig {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px 9px;
+}
+
+.trig-head { display: flex; align-items: baseline; gap: 8px; }
+.trig-name { font-size: 12.5px; color: var(--ink); }
+.trig-desc { font-size: 11px; color: var(--ink-3); }
+.trig-head .grow { flex: 1 1 auto; }
+
+.trig-n {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+
+.trig-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.trig-empty { font-size: 11.5px; color: var(--ink-3); }
+
+/* 一枚胶囊 = 一个动作：名字（点一下试演）＋ 可选序号 ＋ 可选上下箭头 ＋ ×。
+   名字和 × 都是要发请求的真按钮，只是把边框和背景去掉了，看起来还是胶囊的一部分。 */
+.act-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #bcd0ee;
+  background: rgba(255, 255, 255, .78);
+  border-radius: 999px;
+  overflow: hidden;
+}
+/* 有序的时机（扣费反应）用方一点的角 + 序号，和「随手一放」的池子区分开 */
+.act-chip.ord { border-radius: 8px; }
+
+.act-chip .nm {
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  color: var(--accent-2);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 5px 4px 10px;
+}
+.act-chip .nm:hover { background: var(--accent-soft); text-decoration: underline; }
+.act-chip .nm:active { transform: none; }
+
+.act-chip .rank {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  padding: 2px 6px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
+.act-chip .mv,
+.act-chip .x {
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+.act-chip .mv:hover, .act-chip .x:hover { background: var(--accent-soft); color: var(--accent-2); }
+.act-chip .x:hover { background: #ffecec; color: var(--bad); }
+/* 到头了的那一头（第一个的 ↑、最后一个的 ↓）压到几乎看不见，但位置留着 ——
+   一按就消失的话，胶囊的宽度会跳一下 */
+.act-chip .mv:disabled, .act-chip .mv:disabled:hover { background: transparent; color: var(--line); }
+
+/* 「加动作」的下拉：刻意做成一枚虚线胶囊，和旁边的实体胶囊是一家的 */
+select.act-add {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--accent-2);
+  background: transparent;
+  border: 1px dashed #bcd0ee;
+  border-radius: 999px;
+  padding: 3px 6px;
+  cursor: pointer;
+  max-width: 118px;
+}
+select.act-add:hover { border-style: solid; border-color: var(--accent); background: #fff; }
+
+.trig-unused { margin: 2px 2px 0; font-size: 11.5px; color: var(--ink-2); }
+.trig-unused .nm { color: var(--ink-3); }
+.trig-unused .dim { color: var(--ink-3); font-size: 11px; }

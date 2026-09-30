@@ -141,7 +141,7 @@ check(!(raw.services || []).includes('昨天不该出现'), '昨天的服务名�
 console.log('      信息条字段：' + r.snapshot.fields.map(f => (f.label ? f.label + '=' + f.value : f.value)).join('  |  '))
 
 console.log('')
-console.log('三、追加一笔 -> 应当且只应当发一条事件，等级按阈值')
+console.log('三、追加一笔 -> 应当且只应当发一条事件，档位按阈值')
 fs.appendFileSync(LEDGER, JSON.stringify({ at: iso(Date.now()), service: 'ChatGPT 网页版', cost: 0.4 }) + '\n', 'utf8')
 r = usage.poll(Date.now())
 check(r.events.length === 1, '新增 1 行 -> 1 条事件', '实际 ' + r.events.length + ' 条')
@@ -149,7 +149,7 @@ if (r.events.length) {
   const ev = r.events[0]
   console.log('      ' + JSON.stringify(ev))
   check(ev.source === 'manual', 'source=manual')
-  check(ev.level === 'pain-normal', '¥0.4 >= 0.3 -> pain-normal', '实际 ' + ev.level)
+  check(ev.level === 'normal', '¥0.4 >= 0.3 -> normal（档位，不是动作名）', '实际 ' + ev.level)
 }
 r = usage.poll(Date.now() + 1000)
 check(r.events.length === 0, '没有新增行时不重复发事件', '实际 ' + r.events.length + ' 条')

@@ -18,7 +18,7 @@ html, body {
   top: 2px;
   left: 0; right: 0;
   margin: 0 auto;
-  /* 上面留给鲸鱼娘，底部让出信息条。
+  /* 上面留给傻鱼，底部让出信息条。
      用 max-height + max-width 双约束（等价 object-fit: contain）而不是写死 height：
      帧画布是 420×480，写死 height 时 width:auto 会推出窗口（窗口只有 ~385 DIP 宽），
      而绝对定位元素一旦溢出，`margin:auto` 会退化成 0，图就被挤到左边去了。 */
@@ -27,6 +27,69 @@ html, body {
   width: auto;
   height: auto;
   cursor: grab;
+}
+
+/* ---------- 扣费数字（用多少扣多少） ----------
+   整层不吃鼠标事件：它是纯装饰，不能挡住拖鱼 / 点鱼。
+
+   为什么是**竖排**而不是一个数字背后左右错开：桌宠窗口只有 ~380px 宽，一行
+   「-0.3 积分」就占掉 70px，横向最多错开两三格；一次日志落盘回来十几条记录时
+   只能糊成一团红字（这个坑踩过，截图里是「-0.7-0.8 积分积分」叠在一起）。
+   竖排就没有这个问题：一笔一行，新的从下面顶上来，旧的自然往上走、淡出。
+   读起来正好是「钱一笔一笔在流出去」，也就是一张流水账。
+
+   flex-end + 从**顶上**删旧行 => 剩下的行不会跳：底部一直钉在同一个位置。 */
+.hit-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  /* 底边落在裙子那儿（鱼身上），往上长到胸口 —— 不遮眼睛，也不压到信息条 */
+  height: 74%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.hit-num {
+  color: #d8402f;
+  font: 800 15px/1.42 "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  letter-spacing: .2px;
+  white-space: nowrap;
+  opacity: 0;
+  /* 描一圈白边：桌宠飘在任意壁纸上，纯色数字落到浅色壁纸里会糊掉 */
+  text-shadow:
+    0 0 2px #fff, 0 0 2px #fff, 0 1px 0 #fff, 0 -1px 0 #fff,
+    1px 0 0 #fff, -1px 0 0 #fff, 1px 1px 0 #fff, -1px -1px 0 #fff;
+  animation: hit-in .95s ease-out forwards;
+}
+
+/* 暴击那一档更大更红：不看数字本身也知道这一笔不便宜 */
+.hit-num.big {
+  font-size: 19px;
+  color: #c1271b;
+}
+
+.hit-num .u {
+  margin-left: 2px;
+  font-size: .62em;
+  font-style: normal;
+  opacity: .82;
+}
+
+/* 顶上来 → 顿一下 → 往上走并淡出。
+   translate 只走十几像素：位置主要由 flex 排版决定，这里加的是一点「被顶上来」的动势。
+   （用 transform 而不是改 margin，才不会每帧都重排整个列表。） */
+@keyframes hit-in {
+  0%   { opacity: 0; transform: translateY(11px) scale(.86); }
+  16%  { opacity: 1; transform: translateY(0) scale(1.05); }
+  32%  { transform: translateY(0) scale(1); }
+  66%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-12px) scale(1); }
 }
 
 #pet.dragging {

@@ -13,14 +13,18 @@ const meta = {
   label: 'MyTool',
   vendor: '我自己写的 CLI',
   badge: 'MY',             // 面板上的小角标，2~3 个字符
-  unit: 'token',           // 'token'（token）/ 'credit'（积分）/ 'CNY'（人民币）
+  unit: 'token',           // 面板上显示用的单位：'token'（token）/ 'credit'（积分）/ 'CNY'（人民币）
   paths: ['~/.mytool/logs'],   // 面板里展示「读哪里」
   desc: '读 ~/.mytool/logs/*.jsonl 里的 usage 行',
   // 字段表：决定「设置 → 桌宠上显示」里能勾什么。unit 会渲染成数字后的小字。
   fields: [{ id: 'mytool', label: 'MyTool 今日', unit: 'token', desc: '今日累计' }],
-  // 受击阈值 [[金额下限, 等级], ...]，从高到低。等级：pain-weak / pain-normal / critical。
-  // 不写就用默认（>=1 算普通痛）。
-  damage: [[100000, 'critical'], [30000, 'pain-normal']],
+  // 受击阈值 [[下限, 档位], ...]，从高到低。档位：weak / normal / critical。
+  // 档位只说「这笔算轻/中/重」，至于每个档位播哪个动作，是用户在设置里排的。
+  // （老写法 pain-weak / pain-normal 也认，但新插件用 weak / normal。）
+  // 单位就是**你自己 emit 的那个量纲**（token / 元 / 积分），编排层不换算 ——
+  // 所以按「你这个来源单笔大概多少」来填：token 来源 2~6 万，元来源 0.004~0.01。
+  // 不写就用默认（>= 1 算普通痛）。
+  damage: [[60000, 'critical'], [20000, 'normal']],
 }
 
 const BLANK = () => ({ tokens: 0, calls: 0 })

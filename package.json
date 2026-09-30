@@ -1,6 +1,6 @@
 {
   "name": "whale-pet",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "鲸鱼娘独立 Windows 桌宠：把 token 消耗变成看得见的反应，数据源以插件形式装卸",
   "main": "main.js",
   "private": true,
@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "start": "electron .",
-    "test": "node tools/test-providers.js && node tools/test-user-plugin.js",
+    "test": "node tools/test-triggers.js && node tools/test-hit.js && node tools/test-hit-pacing.js && node tools/test-scale.js && node tools/test-providers.js && node tools/test-user-plugin.js",
     "verify": "python tools/verify-panel.py"
   },
   "devDependencies": {

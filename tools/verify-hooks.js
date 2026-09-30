@@ -35,8 +35,8 @@ function attachPanelVerify(win, ctx) {
   // 在窗口里**真点一遍按钮**（脚本见 tools/settings-selftest.js）。点真实 DOM 而不是
   // 直接调函数：只有点按钮才验得到事件绑定、异步 IPC 往返、以及回来之后的重新渲染。
   //
-  // 分两段跑，每段各抓两张图。抓桌宠那两张才是关键 —— 在设置里勾了字段，最终要
-  // 落到桌宠的信息条上，那张图才是「选择生效了」的直接证据。
+// 分三段跑，中间由主进程各抓图（面板 + 桌宠）。抓桌宠那几张才是关键 —— 在设置里
+// 改了什么，最终要落到桌面上，那张图才是「选择生效了」的直接证据。
   win.webContents.once('did-finish-load', () => {
     let mod = null
     try {
@@ -46,18 +46,26 @@ function attachPanelVerify(win, ctx) {
       return
     }
 
-    const run = (phase, script, panelShot, petShot) => {
+    /**
+     * @param opt.petFirst 先抓桌宠再抓面板。**试演那一段必须这样**：动作只播一秒多，
+     *                     而抓设置窗口本身要先等 900ms —— 等它抓完，桌宠早就回待机了。
+     * @param opt.petWait  抓桌宠前等多久（等动作演到中段）
+     */
+    const run = (phase, script, panelShot, petShot, opt = {}) => {
       if (win.isDestroyed()) return Promise.resolve()
+      const shotPanel = () => capture('settings', panelShot, { wait: opt.panelWait || 900 })
+      const shotPet = () => capture('pet', petShot, { wait: opt.petWait || 3200 })
       return win.webContents.executeJavaScript(script, true)
         .then(res => note('settings:selftest', { phase, results: res }))
         .catch(err => note('settings:selftest-error', { phase, message: String((err && err.message) || err) }))
-        .then(() => capture('settings', panelShot, { wait: 900 }))
-        .then(() => capture('pet', petShot, { wait: 3200 }))
+        .then(() => (opt.petFirst ? shotPet().then(shotPanel) : shotPanel().then(shotPet)))
     }
 
     setTimeout(() => {
       run('a', mod.PHASE_A, 'settings-selftest-a.png', 'bar-with-manual.png')
         .then(() => run('b', mod.PHASE_B, 'settings-selftest-b.png', 'bar-restored.png'))
+        .then(() => run('c', mod.PHASE_C, 'settings-selftest-c.png', 'action-preview.png',
+                        { petFirst: true, petWait: 420, panelWait: 200 }))
     }, 3200)
   })
 }

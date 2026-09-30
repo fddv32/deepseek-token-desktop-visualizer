@@ -28,14 +28,16 @@ const meta = {
   label: 'MyTool',
   vendor: '我自己写的 CLI',
   badge: 'MY',                     // 设置里的角标，2~3 个字符
-  unit: 'token',                   // 这个来源的用量单位：'token' / 'credit'（积分）/ 'CNY'
+  unit: 'token',                   // 面板上显示时用的单位：'token' / 'credit'（积分）/ 'CNY'
   paths: ['~/.mytool/logs'],       // 设置里展示「读哪里」
   desc: '读 ~/.mytool/logs/*.jsonl 里的 usage 行',
   fields: [{ id: 'mytool', label: 'MyTool 今日', unit: 'token' }],
-  // 受击阈值 [[金额下限, 等级], ...]，从高到低。等级只能是 pain-weak / pain-normal / critical。
-  // 不写就用默认（>= 1 算普通痛）。量纲不同所以阈值必须各写各的：
-  // 积分单笔约 0.8，人民币单笔约 0.002~0.006，token 单笔常见 1~8 万。
-  damage: [[100000, 'critical'], [30000, 'pain-normal']],
+  // 受击阈值 [[下限, 档位], ...]，从高到低。档位只能是 weak / normal / critical。
+  //
+  // 单位就是**你自己 emit 的那个量纲**（token / 元 / 积分），编排层不做任何换算 ——
+  // 所以按「你这个来源单笔大概多少」来填：token 来源常见 1~8 万，人民币来源 0.004~0.012，
+  // 积分来源 0.1 上下。不写就用默认（>= 1 算 normal）。
+  damage: [[60000, 'critical'], [20000, 'normal']],
 }
 
 function create(api) {
@@ -136,6 +138,7 @@ module.exports = { meta, create }
 | `Tailer(file)` | 增量读**单个**文件的追加内容，`.drain()` 返回新出现的完整行 |
 | `TailSet` | 增量读**一批**文件；`.read(files)` 逐行给你 `{ line, history, file }`，并自动清理已消失的文件 |
 | `rollDay(now, state, onNewDay)` | 北京时间跨天时调 `onNewDay()` 并返回今天的 `dayKey`，配合 `bjDayKey(at) !== day` 过滤 |
+| `hasNodeSqlite()` / `sqliteQuery(dbPath, sql)` | 只读查一个 SQLite 库。**异步**返回行数组，任何失败都给你 `null`。本进程（Electron 33 / Node 20）没有 `node:sqlite`，所以它去借 WorkBuddy 自带的 Node 起一次性子进程；借不到就 `null`，你自己降级 |
 | `bjDayKey(ts)` / `bjTodayStart(ts)` | UTC 毫秒 → 北京时间的 `YYYYMMDD` 整数 / 今天 00:00 的 UTC 毫秒 |
 | `parseIso(s)` / `num(v)` | ISO-8601 → UTC 毫秒 / 转数字（非法值给 0） |
 | `UNIT_LABEL` / `withUnit(v, unit)` | 单位显示名映射 / 拼「值 + 单位」（不想自己拼的时候用） |
@@ -150,7 +153,26 @@ module.exports = { meta, create }
 | `ctx.balance` | DeepSeek 余额状态（`{supported, value, currency, available, error}`） |
 
 **`emit(ev)` 的字段**：`{ source, amount, unit, at, id }`，其余字段随便加（会一起传给渲染端）。
-`amount` 与 `meta.damage` 的阈值比较后得出受击等级 —— **渲染端只认等级**，不做任何业务判断。
+平台做两件事：拿 `amount` 和 `meta.damage` 比出受击**档位**（weak / normal / critical），
+再把 `amount` + `unit` 排版成鱼身上那句 `-多少`。**渲染端只认这两样**，不做任何业务判断，
+也不做任何换算 —— 至于这个档位播哪一段动作，是用户在设置面板里排的「扣费反应」名单，
+和你无关，也不用管。
+
+`unit` 就是你报账用的量纲，原样呈现给用户：
+
+| `unit` | 鱼身上飘出来的样子 | 典型来源 |
+| --- | --- | --- |
+| `'credit'` | `-0.09 积分` | WorkBuddy |
+| `'CNY'` | `-¥0.004` | DSH / 手动记账 |
+| `'token'` | `-1.2万 token` | Codex / Claude / ZCode |
+
+所以你**在 `emit` 里如实报 `amount`**，桌面上「用多少扣多少」就自动对得上 —— 平台不折价、
+不累计，也**没有**任何单价配置项。`meta.unit`（面板上显示用）和 `emit` 里的 `unit`
+可以是两回事：DSH 面板上按 token 显示，但它 `emit` 的是 `unit: 'CNY'` 的 `cost`，
+所以它飘出来的就是人民币。
+
+一轮里你可能 `emit` 很多笔（一次落盘几十条记录很正常）—— **不用自己合计，也不该合计**：
+平台会一笔一笔如实呈现（渲染端把它们排成队挨个飘出来）。你少报一笔，桌面上就少一个数字。
 
 ## 必须遵守的两条
 
@@ -166,13 +188,15 @@ module.exports = { meta, create }
 
 | 你想做的事 | 写在哪 |
 | --- | --- |
-| 受击阈值 | `meta.damage` |
+| 受击阈值（单位 = 你自己 `emit` 的量纲） | `meta.damage` |
 | 信息条上能勾哪些字段 | `meta.fields` |
 | 数字后面的单位（积分 / token / ¥） | `meta.unit` + `fields()` 里的 `unit` |
+| 鱼身上飘的数字与单位 | `emit()` 里的 `amount` + `unit` |
 | 进「今日已用」合计 | `raw()` 里的 `todayTokens` / `todayCredit` |
 | 设置里显示「读哪里」 | `meta.paths` |
 
-所以新插件一装好就自动出现在设置里、自动有单位后缀、自动进「今日已用」，界面上一个像素都不用改。
+所以新插件一装好就自动出现在设置里、自动有单位后缀、自动进「今日已用」、扣费时自动
+飘出它自己的金额，界面上一个像素都不用改。
 
 ## 排错
 

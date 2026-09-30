@@ -27,7 +27,9 @@ const meta = {
   paths: ['~/.codex/sessions'],
   desc: '读 rollout 里的 token_usage_record（input/output/cached/reasoning）',
   fields: [{ id: 'codex', label: 'Codex 今日', unit: 'token' }],
-  damage: [[60000, 'critical'], [20000, 'pain-normal']],
+  // 阈值单位是这个来源自己的量纲（token）：单次 2 万算普通痛、6 万算暴击。
+  // 编排层不换算，飘在鱼身上的就是这个 token 数。
+  damage: [[60000, 'critical'], [20000, 'normal']],
 }
 
 const RECENT_MS = 3 * 24 * 60 * 60 * 1000 // 只扫最近三天还在写的 rollout

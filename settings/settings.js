@@ -21,6 +21,9 @@ window.addEventListener('error', ev => {
  * 就只剩噪音、看不出结构了。抽一个出来，渲染函数才回到「结构」本身。
  * 约定：值为 null / undefined / false 的属性直接跳过 —— 这样才能写
  * `it.vendor ? h(...) : null` 这种可选片段。
+ * 键名带连字符的（data-* / aria-*）走 setAttribute：直接 `el['data-x'] = v` 只会
+ * 挂一个同名的 JS 属性，元素上并没有那个 attribute，`querySelector('[data-x=…]')`
+ * 和 `dataset.x` 都读不到 —— 这个坑踩过一次。
  */
 function h(tag, props, ...kids) {
   const el = document.createElement(tag)
@@ -30,6 +33,7 @@ function h(tag, props, ...kids) {
     if (k === 'class') el.className = v
     else if (k === 'text') el.textContent = v
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v)
+    else if (k.indexOf('-') >= 0) el.setAttribute(k, v === true ? '' : String(v))
     else el[k] = v
   }
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid)
@@ -62,6 +66,49 @@ function toast(msg) {
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200)
 }
 
+/* ---------- 左侧导航：一栏一项，一项一页 ---------- */
+
+/**
+ * 为什么是页而不是「一页往下滚」：五段里只有一段是你现在要看的，剩下四段都在
+ * 滚动条底下 —— 想改「动作」得先滚过整个字段列表。拆成页之后点谁看谁。
+ *
+ * 页与导航项都靠 data-page / id 对上，渲染端只认 PAGES 这一个顺序表：
+ * 加一页 = 加一个 <section id="page-x"> + 一个 <button data-page="x">，
+ * 这个文件里只多一个字符串。
+ */
+const PAGES = ['look', 'fields', 'actions', 'plugins', 'about']
+const PAGE_KEY = 'whalepet.settings.page'
+
+function showPage(id) {
+  const page = PAGES.indexOf(id) >= 0 ? id : PAGES[0]
+  for (const b of document.querySelectorAll('.nav-item')) {
+    const on = b.dataset.page === page
+    b.classList.toggle('on', on)
+    b.setAttribute('aria-current', on ? 'true' : 'false')
+  }
+  for (const s of document.querySelectorAll('.page')) {
+    s.classList.toggle('on', s.id === 'page-' + page)
+  }
+  // 翻页时把滚动位置归零。所有页共用 main 这一个滚动容器，不归零的话
+  // 从很长的插件列表切回只有三行的外观，会停在半空中看着像内容丢了。
+  document.querySelector('main').scrollTop = 0
+  try { localStorage.setItem(PAGE_KEY, page) } catch { /* 隐私模式等写不进去，不影响使用 */ }
+}
+
+document.querySelector('.nav').addEventListener('click', e => {
+  const b = e.target.closest('.nav-item')
+  if (b) showPage(b.dataset.page)
+})
+
+/** 上次看的是哪一页。设置窗口是常开常关的，「还在插件页」比每次弹回外观顺手。 */
+function startPage() {
+  try {
+    const saved = localStorage.getItem(PAGE_KEY)
+    if (saved && PAGES.indexOf(saved) >= 0) return saved
+  } catch { /* 读不到就从第一页开始 */ }
+  return PAGES[0]
+}
+
 /* ---------- 渲染：外观 ---------- */
 
 function renderAppearance() {
@@ -85,8 +132,146 @@ function renderAppearance() {
 
   $('ontop').checked = a.alwaysOnTop
   $('version').textContent = 'v' + a.version
+  // 导航栏底那条版本：和「关于」页里那个是同一个值，只是位置不同。
+  // 只印版本号 —— 栏顶的 brand 已经写着名字了，这里再来一遍反而挤。
+  $('nav-ver').textContent = 'v' + a.version
   const cur = a.skins.find(s => s.id === a.skin)
   $('cur-skin').textContent = '当前形象：' + (cur ? cur.label : a.skin)
+}
+
+/* ---------- 渲染：动作 ---------- */
+
+/**
+ * 动作页是**按时机分组**画的：一个时机一张卡片，卡片里就是它现在的名单。
+ *
+ * 为什么不再按动作平铺（原来是 8 行、每行一个开关 + 一句时机说明）：用户真正要
+ * 回答的问题是「双击的时候会播什么」。平铺的列表得先把 8 行扫一遍、再从每行右侧
+ * 那行小字里找「双击」两个字，改的时候还得在两行之间来回看。分组之后，这个问题
+ * 的答案就是那张卡片本身，改也是在答案上改。
+ *
+ * 数据整份来自主进程（main.js 的 actionState()）：有哪些动作能用、每个时机里放了谁、
+ * 谁一个时机都没进。这个文件只负责画和发请求，不做任何判断 —— 所以「支持哪些动作」
+ * 永远和实际素材一致。
+ *
+ * 只有 `ordered` 的时机（扣费反应）露排序按钮：那里的顺序 = 轻重分档，排错了就是
+ * 「小额扣费播暴击」，是看得见的错。别的时机随机挑，顺序不影响播放，多一排箭头
+ * 只是噪音。
+ */
+function renderActions() {
+  const app = state.app
+  if (!app || !app.actions) return
+  const data = app.actions
+  const box = $('actions')
+  box.textContent = ''
+
+  const catalog = data.catalog || []
+  // 一张动作素材都没扫到：说清楚是素材的问题，而不是画一堆空卡片让人以为软件坏了
+  if (catalog.length === 0) {
+    box.append(h('span', { class: 'hint', text: '这个形象没有扫到动作素材' }))
+    $('action-count').textContent = ''
+    return
+  }
+  const labelOf = id => (catalog.find(x => x.id === id) || { label: id }).label
+  const descOf = id => (catalog.find(x => x.id === id) || {}).desc || ''
+
+  for (const t of data.triggers || []) {
+    const ids = t.ids || []
+    const body = h('div', { class: 'trig-body' })
+
+    if (ids.length === 0) {
+      body.append(h('span', { class: 'trig-empty', text: '空着 —— 这个时机不会播任何动作' }))
+    }
+
+    ids.forEach((id, i) => {
+      body.append(h('span', { class: 'act-chip' + (t.ordered ? ' ord' : ''), title: descOf(id) },
+        // 序号只对有序时机有意义（1 = 最轻的那档）
+        t.ordered ? h('i', { class: 'rank', text: String(i + 1) }) : null,
+        h('button', {
+          class: 'nm',
+          text: labelOf(id),
+          title: '点一下：让桌面上的桌宠立刻演一次',
+          onclick: () => previewAction({ id, label: labelOf(id) }),
+        }),
+        t.ordered ? h('button', {
+          class: 'mv', text: '↑', title: '往上挪一位（更轻的那档）',
+          disabled: i === 0,
+          onclick: () => moveIn(t.id, ids, id, -1),
+        }) : null,
+        t.ordered ? h('button', {
+          class: 'mv', text: '↓', title: '往下挪一位（更重的那档）',
+          disabled: i === ids.length - 1,
+          onclick: () => moveIn(t.id, ids, id, 1),
+        }) : null,
+        h('button', {
+          class: 'x', text: '×',
+          title: '从这个时机里去掉（它还在别的时机里的话，那边不受影响）',
+          onclick: () => run(() => window.settings.setTrigger(t.id, ids.filter(x => x !== id))),
+        })))
+    })
+
+    // 「加动作」的下拉只列**还没在这个时机里**的动作 —— 列上已经有的，
+    // 选中也是一次空操作，白让人点一下。
+    const rest = catalog.filter(x => ids.indexOf(x.id) < 0)
+    if (rest.length > 0) {
+      const sel = h('select', { class: 'act-add', title: '选一个加进这个时机' },
+        h('option', { value: '', text: '＋ 加动作' }),
+        rest.map(x => h('option', { value: x.id, text: x.label, title: x.desc || '' })))
+      sel.addEventListener('change', e => {
+        const id = e.target.value
+        if (!id) return
+        e.target.value = ''
+        run(() => window.settings.setTrigger(t.id, ids.concat([id])))
+      })
+      body.append(sel)
+    }
+
+    box.append(h('div', { class: 'trig', 'data-trigger': t.id },
+      h('div', { class: 'trig-head' },
+        h('b', { class: 'trig-name', text: t.label }),
+        h('span', { class: 'trig-desc', text: t.desc }),
+        h('span', { class: 'grow' }),
+        h('span', { class: 'trig-n', text: ids.length ? ids.length + ' 个' : '空' })),
+      body))
+  }
+
+  // 没排进任何时机的动作：不是坏了，是「还没给它安排出场的时候」。
+  // 单独列一条，否则它就从界面上消失了，用户只会觉得「这动作怎么没了」。
+  const unused = (data.unused || []).map(labelOf)
+  box.append(h('p', { class: 'trig-unused' },
+    h('b', { text: '没安排时机：' }),
+    h('span', { class: 'nm', text: unused.length ? unused.join('、') : '（没有）' }),
+    unused.length ? h('span', { class: 'dim', text: ' —— 加进上面任一时机它就会开始播' }) : null))
+
+  $('action-count').textContent = data.total ? data.used + '/' + data.total : ''
+}
+
+/** 有序时机里把某个动作上/下挪一位。传的是整份新顺序，主进程只管存。 */
+function moveIn(slot, ids, id, delta) {
+  const from = ids.indexOf(id)
+  const to = from + delta
+  if (from < 0 || to < 0 || to >= ids.length) return
+  const next = ids.slice()
+  next.splice(from, 1)
+  next.splice(to, 0, id)
+  run(() => window.settings.setTrigger(slot, next))
+}
+
+/** 试演：不改配置，只让桌宠播一次。连点会把动画反复打断，所以限一下频。 */
+let previewAt = 0
+
+async function previewAction(it) {
+  const now = Date.now()
+  if (now - previewAt < 400) return
+  previewAt = now
+  let res = null
+  try {
+    res = await window.settings.previewAction(it.id)
+  } catch (err) {
+    toast('试演失败：' + ((err && err.message) || err))
+    return
+  }
+  if (res && res.ok) toast('试演：' + it.label)
+  else toast((res && res.message) || '试演失败')
 }
 
 /* ---------- 渲染：信息条预览 ---------- */
@@ -287,6 +472,7 @@ function absorb(res) {
   if (res.usage) state.usage = res.usage
   if (res.providers) state.providers = res.providers
   renderAppearance()
+  renderActions()
   renderFields()
   renderProviders()
   renderPreview()
@@ -364,6 +550,9 @@ $('btn-dir').addEventListener('click', async () => {
 })
 
 /* ---------- 启动 ---------- */
+
+// 先定页再拉数据：页是纯 DOM 状态，不等 IPC；否则窗口会先闪一下「外观」再跳到上次那页。
+showPage(startPage())
 
 async function refresh() {
   setBusy(true)
