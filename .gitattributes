@@ -1,0 +1,26 @@
+# 换行与编码策略
+#
+# 顺序很重要：gitattributes 是「**最后一条匹配的规则生效**」，所以兜底规则要写在前面。
+
+# 兜底：仓库里文本统一 LF，签出时按平台处理
+* text=auto eol=lf
+
+# 启动脚本必须是 GBK 编码 + CRLF 换行。
+#
+# 中文 Windows 的 CMD 代码页是 936(GBK)：脚本存成 UTF-8，CMD 会按 GBK 逐字节配对，
+# 把下一行的首字符吃掉，报「不是内部或外部命令」；再是纯 LF 换行，多行 if ( ... )
+# 括号块直接解析失效。两个坑都会让「双击了没反应」，而报错信息看着和真实原因无关。
+#
+# 所以这里声明 -text —— 不做任何换行转换，git 原样存取。这条必须放在上面的
+# * text=auto 之后，否则会被它覆盖掉，你拿到的 .bat 就是 LF 的了。
+*.bat -text
+*.cmd -text
+
+# 图片按二进制处理，不做 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# 验收脚本的截图（tools/*.png）在 .gitignore 里，这里只是兜住别处误加的图

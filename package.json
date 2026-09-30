@@ -1,0 +1,23 @@
+{
+  "name": "whale-pet",
+  "version": "1.2.0",
+  "description": "鲸鱼娘独立 Windows 桌宠：把 token 消耗变成看得见的反应，数据源以插件形式装卸",
+  "main": "main.js",
+  "private": true,
+  "license": "MIT",
+  "keywords": [
+    "desktop-pet",
+    "electron",
+    "token",
+    "usage-monitor",
+    "plugin"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "test": "node tools/test-providers.js && node tools/test-user-plugin.js",
+    "verify": "python tools/verify-panel.py"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

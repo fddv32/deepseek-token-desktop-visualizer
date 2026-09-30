@@ -1,0 +1,73 @@
+:root {
+  --usage-h: 78px;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#pet {
+  position: absolute;
+  top: 2px;
+  left: 0; right: 0;
+  margin: 0 auto;
+  /* 上面留给鲸鱼娘，底部让出信息条。
+     用 max-height + max-width 双约束（等价 object-fit: contain）而不是写死 height：
+     帧画布是 420×480，写死 height 时 width:auto 会推出窗口（窗口只有 ~385 DIP 宽），
+     而绝对定位元素一旦溢出，`margin:auto` 会退化成 0，图就被挤到左边去了。 */
+  max-height: calc(100% - var(--usage-h) - 4px);
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  cursor: grab;
+}
+
+#pet.dragging {
+  cursor: grabbing;
+}
+
+/* system 模式：让系统接管这块矩形做窗口移动（= 拖动标题栏）。
+   代价是该区域内网页层可能收不到鼠标移动事件，所以交互判定要与之配合。
+   poll 模式下不加这个类，区域保持普通可点。 */
+#pet.drag-region {
+  -webkit-app-region: drag;
+}
+
+/* ---------- 用量信息条 ----------
+   外观（冰白底 / 藏青字 / 圆胶囊）全部来自 shared/pills.css 的 .pillbar，
+   和「用量面板」里的预览是同一份。这里只管两件事：在窗口里的位置、以及存在感。 */
+
+#usage {
+  position: absolute;
+  /* 左右留 6px：再小圆角会贴到窗口边，再大和桌宠本体比就显得松 */
+  left: 6px;
+  right: 6px;
+  bottom: 5px;
+  /* 默认略收着，鼠标移上去完全清晰 */
+  opacity: .92;
+  transition: opacity .3s ease, border-color .3s ease, box-shadow .3s ease;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+
+#usage:hover {
+  opacity: 1;
+}
+
+/* 长时间没有扣费时进一步淡出，有新账立刻恢复 —— 这样它常驻但不吵 */
+#usage.idle { opacity: .55; }
+#usage.idle:hover { opacity: 1; }
+
+/* 刚发生扣费：边框与投影亮一下，视线能扫到 */
+#usage.pulse {
+  border-color: #6f9ce8;
+  box-shadow: 0 4px 18px rgba(70, 120, 220, .55), inset 0 1px 0 rgba(255, 255, 255, .95);
+  opacity: 1;
+}

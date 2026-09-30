@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+  <title>设置 · 鲸鱼娘桌宠</title>
+  <!-- pills.css 与桌宠信息条共用同一份，所以这里的预览和桌面上的条不可能长得不一样 -->
+  <link rel="stylesheet" href="../shared/pills.css" />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header>
+    <h1>设置</h1>
+    <p>外观、信息条上显示什么、启用哪些数据源</p>
+  </header>
+
+  <main>
+    <!-- ① 外观：大小 / 形象 / 置顶。原来在右键菜单里，挪进来之后菜单只剩三项。 -->
+    <section>
+      <div class="sec-head"><h2>外观</h2></div>
+
+      <div class="opt">
+        <span class="k">大小</span>
+        <div class="seg" id="scale">
+          <button data-scale="0.7">小</button>
+          <button data-scale="1">中</button>
+          <button data-scale="1.4">大</button>
+        </div>
+        <span class="grow"></span>
+        <span class="hint" id="scale-hint"></span>
+      </div>
+
+      <div class="opt col">
+        <span class="k">形象</span>
+        <div class="chips" id="skins"></div>
+      </div>
+
+      <div class="opt">
+        <span class="k">窗口置顶</span>
+        <label class="switch" title="关掉之后桌宠会被别的窗口盖住">
+          <input type="checkbox" id="ontop" />
+          <span class="track"></span>
+        </label>
+        <span class="grow"></span>
+        <span class="hint">关掉后桌宠会被其它窗口遮住</span>
+      </div>
+    </section>
+
+    <!-- ② 桌宠上显示 -->
+    <section>
+      <div class="sec-head">
+        <h2>桌宠上显示</h2>
+        <span id="field-count" class="count"></span>
+        <span class="grow"></span>
+        <span class="hint">＋ 添加 · ↑ ↓ 排序 · × 移除</span>
+      </div>
+
+      <div class="preview-wrap">
+        <div class="preview-label">信息条预览</div>
+        <div id="preview" class="pillbar"></div>
+      </div>
+
+      <div id="field-on" class="field-list"></div>
+
+      <div class="sub">可添加的字段</div>
+      <div id="field-off" class="chips"></div>
+    </section>
+
+    <!-- ③ 数据源插件 -->
+    <section>
+      <div class="sec-head">
+        <h2>数据源插件</h2>
+        <span id="plugin-count" class="count"></span>
+        <span class="grow"></span>
+        <button id="btn-dir" class="ghost" title="打开用户插件目录 ~/.whalepet/providers">插件目录</button>
+        <button id="btn-reload" class="ghost" title="重新扫描并加载 providers/ 目录">重载插件</button>
+      </div>
+      <p class="sec-note">「卸载」= 不装载它：不读日志、它的字段也从信息条上摘掉。文件不动，随时可以装回来。</p>
+      <div id="providers" class="providers"></div>
+      <div id="plugin-errors" class="errors hidden"></div>
+    </section>
+
+    <!-- ④ 关于 -->
+    <section>
+      <div class="sec-head"><h2>关于</h2></div>
+      <div class="about">
+        <div class="about-title">
+          <b>鲸鱼娘桌宠</b>
+          <span class="ver" id="version">v—</span>
+          <span class="grow"></span>
+          <span class="dim" id="cur-skin"></span>
+        </div>
+        <ul class="notes">
+          <li><b>左键单击</b>摸摸（随机反应）· <b>双击</b>开心跳跃 · <b>按住拖动</b>拎起来移动</li>
+          <li><b>右键</b>桌宠或底部信息条 → 菜单（置顶 / 本设置窗口 / 退出）</li>
+          <li>每笔模型调用到达时，鲸鱼娘会按金额轻重受击：轻痛 → 普通痛 → 暴击</li>
+          <li>形象素材来自 <code>dsh-damage-pulse</code> 插件；交互设计参考 <code>LorisYounger/VPet</code></li>
+          <li>所有插件都<b>只读</b>日志：不写任何文件、不改原插件目录</li>
+          <li>DeepSeek 余额需联网查一次官方接口，Key 只从 <code>DEEPSEEK_API_KEY</code> 或
+            <code>~/.dsh/.credentials.yaml</code> 读取，不写盘、不外发</li>
+          <li>想加自己的数据源：把 <code>providers/_template.js</code> 或目录里
+            <code>README.md</code> 的示例复制成 <code>xxx.js</code> 放进插件目录，再点「重载插件」，<b>不用重启</b></li>
+        </ul>
+        <div class="sub">数据源</div>
+        <div id="about-sources" class="sources"></div>
+        <div class="cfg">配置文件：<code>config.json</code>（位置 / 大小 / 置顶 / 形象）、<code>usage.json</code>（插件装没装 / 显示哪些字段）</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="../shared/pills.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>

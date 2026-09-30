@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src file:; style-src 'self'" />
+  <title>鲸鱼娘桌宠</title>
+  <!-- pills.css 是两个窗口共用的（信息条 + 面板预览），list 在 pet.css 之前，
+       方便 pet.css 用 id 选择器盖掉位置/存在感那几行。 -->
+  <link rel="stylesheet" href="../shared/pills.css" />
+  <link rel="stylesheet" href="pet.css" />
+</head>
+<body>
+  <img id="pet" alt="鲸鱼娘" draggable="false" />
+  <!-- 信息条自身就是 .pillbar 容器，内容全部由 pet.js 按 usage 快照里的 fields 生成：
+       字段是可配置的（见「设置 → 桌宠上显示」），所以这里不能写死结构。 -->
+  <div id="usage" class="pillbar"></div>
+  <script src="../shared/pills.js"></script>
+  <script src="pet.js"></script>
+</body>
+</html>

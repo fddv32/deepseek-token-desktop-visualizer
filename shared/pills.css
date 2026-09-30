@@ -1,0 +1,70 @@
+/* 信息条胶囊的公共样式 —— 桌宠底部那条信息条、和「用量面板」里的预览，共用这一份。
+   两个窗口各写一份 CSS 迟早会漂移（改了颜色只改了一处），所以抽出来两边 <link> 同一个文件。
+   类名只有两个：容器 .pillbar、胶囊 .pill。
+
+   配色取自鲸鱼娘本体：藏青（头发/裙）+ 藕荷蓝（蝴蝶结）+ 冰白（围裙）+ 金（腰饰）。
+   信息条做得比桌面亮一档（冰白底 + 藏青字），是刻意的取舍：
+   桌宠常驻在桌面上，深色底在浅色壁纸上会糊成一块，冰白底配藏青反而哪个壁纸都读得清。 */
+
+.pillbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  border-radius: 13px;
+  border: 1.5px solid #b7cbf0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .97) 0%, rgba(225, 238, 255, .96) 100%);
+  /* 桌宠窗口是透明的：底色给足，别让桌面的字透上来把数字糊掉。
+     外阴影在浅色壁纸上负责把信息条「托」起来。 */
+  box-shadow: 0 4px 14px rgba(38, 66, 128, .30), inset 0 1px 0 rgba(255, 255, 255, .95);
+  color: #2c4270;
+  font: 12px/1.25 "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 8px 2px;
+  border-radius: 999px;
+  background: rgba(122, 158, 220, .13);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.pill .lb { color: #7d90b6; font-size: 11.5px; }
+.pill .nm { color: #253d6e; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+
+/* 数字和单位分开：单位用小一号的淡色字，数字仍然是主角。
+   两个 span 套在一个 baseline 对齐的 flex 里，「5.47 积分」的小字才会贴着数字底边。 */
+.pill .vl {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+}
+.pill .un {
+  color: #8fa1c2;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  flex: 0 0 auto;
+}
+
+/* 峰谷价用「和红涨绿跌不冲突」的时段语义色：高峰偏暖珊瑚、谷时偏薄荷绿。
+   这里说的不是涨跌，是时段，所以不套用股市那套红绿。 */
+.pill.t-peak { background: rgba(226, 112, 95, .16); }
+.pill.t-peak .nm { color: #cf5340; }
+.pill.t-valley { background: rgba(58, 168, 110, .16); }
+.pill.t-valley .nm { color: #2c8f5c; }
+
+/* 上下文吃紧时把数字染成警示色（阈值在 usage.js 里切） */
+.pill.t-warn .nm { color: #b8791a; }
+.pill.t-danger .nm { color: #d1434f; }
+
+/* 停用/无数据：整颗退到背景里，但仍然占位（不然信息条会突然跳一下高度） */
+.pill.t-off { background: rgba(122, 158, 220, .10); }
+.pill.t-off .nm { color: #8b9cb9; font-weight: 600; }
