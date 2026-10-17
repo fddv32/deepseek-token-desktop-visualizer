@@ -16,8 +16,15 @@ const meta = {
   unit: 'token',           // 面板上显示用的单位：'token'（token）/ 'credit'（积分）/ 'CNY'（人民币）
   paths: ['~/.mytool/logs'],   // 面板里展示「读哪里」
   desc: '读 ~/.mytool/logs/*.jsonl 里的 usage 行',
-  // 字段表：决定「设置 → 桌宠上显示」里能勾什么。unit 会渲染成数字后的小字。
-  fields: [{ id: 'mytool', label: 'MyTool 今日', unit: 'token', desc: '今日累计' }],
+  // 字段表：决定用量面板「字段」页里能勾什么。unit 会渲染成数字后的小字。
+  //
+  // 想带「缓存命中率」就再加一项（id 惯例 <插件id>cache），并在 raw() 里给出
+  // cacheHitTokens / cacheMissTokens 这一对 —— 怎么从自己的账本推，见
+  // providers/README.md 的「缓存命中率」一节（三种口径差一倍，别照抄别的插件）。
+  fields: [
+    { id: 'mytool', label: 'MyTool 今日', unit: 'token', desc: '今日累计' },
+    // { id: 'mytoolcache', label: 'MyTool 缓存命中', desc: '今日缓存命中占比，越高越省' },
+  ],
   // 受击阈值 [[下限, 档位], ...]，从高到低。档位：weak / normal / critical。
   // 档位只说「这笔算轻/中/重」，至于每个档位播哪个动作，是用户在设置里排的。
   // （老写法 pain-weak / pain-normal 也认，但新插件用 weak / normal。）
@@ -94,6 +101,10 @@ function create(api) {
     poll,
     // raw() 返回的数字会被「今日已用」汇总字段读取：
     //   todayTokens 计入 token 合计，todayCredit 计入积分合计（没有就不填）。
+    //
+    // 有缓存字段的话，顺手给出归一后的那一对（面板「来源」页直接用它，不用自己算）：
+    //   const cc = api.cacheHit.split({ mode: 'aside', input: t.input, hit: t.cacheRead })
+    //   return { …, cacheHitTokens: cc.hit, cacheMissTokens: cc.miss }
     raw(now) {
       return {
         available: state.available,

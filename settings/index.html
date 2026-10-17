@@ -44,7 +44,7 @@
   </aside>
 
   <main>
-    <!-- ① 外观：大小 / 形象 / 置顶。原来在右键菜单里，挪进来之后菜单只剩三项。 -->
+    <!-- ① 外观：大小 / 形象 / 置顶 / 开机自启。原来在右键菜单里，挪进来之后菜单只剩三项。 -->
     <section class="page" id="page-look">
       <div class="sec-head"><h2>外观</h2></div>
 
@@ -73,6 +73,16 @@
         <span class="grow"></span>
         <span class="hint">关掉后桌宠会被其它窗口遮住</span>
       </div>
+
+      <div class="opt">
+        <span class="k">开机自启</span>
+        <label class="switch" title="登录 Windows 时自动把桌宠拉起来">
+          <input type="checkbox" id="autostart" />
+          <span class="track"></span>
+        </label>
+        <span class="grow"></span>
+        <span class="hint">登录时自动启动 · 不做后台服务，随时可在「任务管理器 → 启动」里关掉</span>
+      </div>
     </section>
 
     <!-- ② 桌宠上显示 -->
@@ -92,6 +102,15 @@
 
       <div class="sub">可添加的字段</div>
       <div id="field-off" class="chips"></div>
+
+      <div class="sub">积分额度</div>
+      <div class="opt">
+        <span class="k">WorkBuddy 总额度</span>
+        <input id="quota-credit" type="number" min="0" step="1"
+               style="width:110px" placeholder="未设置" />
+        <span class="grow"></span>
+        <span class="hint">填一次总额度，「今日已用」就会带上剩余积分</span>
+      </div>
     </section>
 
     <!-- ③ 动作：形象里能播的动画，按「什么时候播」分组。

@@ -25,7 +25,10 @@ const meta = {
   unit: 'token',
   paths: ['~/.zcode/cli/rollout'],
   desc: '读 model-io 记录里的 response.usage',
-  fields: [{ id: 'zcode', label: 'ZCode 今日', unit: 'token' }],
+  fields: [
+    { id: 'zcode', label: 'ZCode 今日', unit: 'token' },
+    { id: 'zcodecache', label: 'ZCode 缓存命中', desc: '今日输入里命中 prompt 缓存的占比，越高越省（命中的部分按缓存价计费）' },
+  ],
   // 阈值单位是这个来源自己的量纲（token）：单次 2 万算普通痛、6 万算暴击。
   // 编排层不换算，飘在鱼身上的就是这个 token 数。
   damage: [[60000, 'critical'], [20000, 'normal']],
@@ -123,16 +126,27 @@ function create(api) {
     get detail() { return state.detail },
     poll,
     raw(now) {
+      const t = state.today
+      // ZCode 的 inputTokens 是**总输入**：实测 128/128 条满足
+      //   inputTokens == providerMetadata.anthropic.usage.input_tokens
+      //                  + cache_read_input_tokens + cache_creation_input_tokens
+      // 也就是它把 Anthropic 的「未缓存输入」和「缓存读取」合并了 —— 所以是 'subset'，
+      // 命中部分要相减。**别被字段名骗了**：DSH 的 cacheReadTokens 和它同名，
+      // 但 DSH 的 inputTokens 是未缓存那部分（那边是 'aside'），两家口径相反。
+      const cc = api.cacheHit.split({ mode: 'subset', input: t.input, hit: t.cacheRead })
       return {
         available: state.available,
-        todayTokens: state.today.total,
-        todayInput: state.today.input,
-        todayOutput: state.today.output,
-        todayCacheRead: state.today.cacheRead,
-        callsToday: state.today.calls,
+        todayTokens: t.total,
+        todayInput: t.input,
+        todayOutput: t.output,
+        todayCacheRead: t.cacheRead,
+        todayCacheWrite: t.cacheWrite,
+        callsToday: t.calls,
         lastCallAt: state.lastCallAt,
         lastModel: state.lastModel,
         active: now - state.updatedAt < 90 * 1000,
+        cacheHitTokens: cc.hit,
+        cacheMissTokens: cc.miss,
       }
     },
     fields(now, ctx) {
@@ -142,9 +156,10 @@ function create(api) {
         .slice(0, 4)
         .map(([m, v]) => '  ' + (m || '(未知模型)') + '  ' + ctx.fmtTokens(v))
         .join('\n')
+      const co = { mode: 'subset', input: t.input, hit: t.cacheRead }
       // 没数据时连单位一起收起来（和 codex / claude / dsh / workbuddy 一致）
       const has = state.available && t.calls > 0
-      return [{
+      const out = [{
         id: 'zcode',
         label: 'ZCode 今日',
         unit: has ? 'token' : '',
@@ -156,6 +171,21 @@ function create(api) {
             + (models ? '\n按模型：\n' + models : '')
           : '未找到 ~/.zcode/cli/rollout/model-io-*.jsonl',
       }]
+
+      const cr = api.cacheHit.rate(co)
+      if (cr) {
+        out.push({
+          id: 'zcodecache',
+          label: 'ZCode 缓存命中',
+          value: cr.pct.toFixed(1) + '%',
+          tone: api.cacheHit.tone(cr.pct),
+          title: ['prompt 缓存命中 ' + cr.pct.toFixed(1) + '%（今日 ' + t.calls + ' 次调用）']
+            .concat(api.cacheHit.detail(co, ctx.fmtTokens)).join('\n'),
+        })
+      } else {
+        out.push({ id: 'zcodecache', label: 'ZCode 缓存命中', value: '--', tone: 'off', title: api.cacheHit.EMPTY_HINT })
+      }
+      return out
     },
   }
 }

@@ -16,13 +16,25 @@
 //   保证每个能在界面上选到的倍数，形象都还跟着变大（petAreaH <= CANVAS_H）。
 // tools/test-scale.js 拿真素材核对着这条不变量，image 尺寸改了、常量忘了改会当场红。
 //
+// CANVAS_H 480 → 458 → 428 → 462（PET_AREA_H 同步 420 → 412 → 385 → 415）：
+//   帧里形象的最低点离画布底只有十几行，而上面每一行透明像素都会一路顶到信息条上方 ——
+//   用户说的「形象和文字栏离得太远」主要就是它。458→428 是配合生成脚本把形象上移
+//   （OY 33.3→3.3），把「头顶留白」从 16.2% 压到 10.3% —— 半身立绘的惯例是 8~10%。
+//   428→462 是**换主体**带来的：所有动作改用「叉腰那张的半身」当模板（它的裙子有完整
+//   蕾丝下摆、结构最像样），而它比原来那张**又瘦又高**（692×773 vs 757×743）。
+//   生成脚本的 K 同步 0.49 → 0.51，让形象在画布里的占比和原来持平；画布跟着长高，
+//   否则底部只剩 6px，动作里 dy=+9 会顶到边。
+//   PET_AREA_H 每次都要跟着**升**，是为了把 maxScale 顶回 1.1 以上 —— 不然界面上「大」
+//   那一档会被 clampScale 悄悄夹成 1.09，点了「大」却不是 110%。
+//   这条联动（改 CANVAS_H 就要回算 PET_AREA_H）test-scale.js 管不到，只能靠记。
+//
 // 纯几何，不碰 fs / electron，所以 node 能直接 require 来测。
 'use strict'
 
 const BASE_W = 380        // scale = 1 时窗口宽（信息条要一行放得下，不能比这更窄）
-const PET_AREA_H = 420    // scale = 1 时留给形象的高度；信息条另算
+const PET_AREA_H = 415    // scale = 1 时留给形象的高度；信息条另算
 const CANVAS_W = 420      // 帧画布的原始像素（assets/<形象>/frames/*.png）
-const CANVAS_H = 480
+const CANVAS_H = 462
 const GAP = 4             // #pet 的 max-height 里扣掉的那 4px，见 pet.css
 const MIN_SCALE = 0.5     // 再小就没法用手把桌宠拖回来了
 const MAX_SCALE = 1.1     // 界面上「大」那一档；再大就只剩窗口在长（见文件头）
@@ -45,7 +57,7 @@ function petAreaH(scale, barH) {
  *
  * 再往上，形象画布已经顶到自己的原始高度（petAreaH > CANVAS_H），contain 只把它缩到
  * 原始大小为止 —— 倍数继续加，只有窗口和信息条在长。信息条越高，形象能用的高度被吃掉
- * 的越多，这个上限就越低（信息条 52px 时约 1.14，320px 时约 1.09）。
+ * 的越多，这个上限就越低（信息条 52px 时约 1.11，320px 时约 1.07）。
  */
 function maxScale(barH) {
   return (CANVAS_H + barH + GAP) / (PET_AREA_H + barH)

@@ -6,18 +6,26 @@
 //
 // 跑完会把账本恢复成原样、把临时插件删掉，不会在你机器上留示例数据。
 //
-// 用一把锁保证**串行**：这个脚本会临时覆盖 ~/.whalepet/ledger.jsonl，两次同时跑就会出事 ——
-// 后进来那次读到的「原始账本」其实是前一次塞进去的测试数据，退出时它把测试数据当原样写回去，
-// 用户真正的账本就被静默替换了。抢不到锁就直接退出，不赌。
+// **整套东西跑在沙箱里**（WHALEPET_HOME 指到临时目录），不碰用户的真实文件。
+// 为什么不"改完再还原"：桌宠**可能正在运行**，它一 poll 就把这些测试账目当成真实消费
+// 记进 `usage-history.json`；用量账本是按天累加的，事后还原账本也擦不掉。实测就踩过：
+// 用户的用量面板里凭空多出「1.8 万 token · ¥1.25 · 2 次」，而他一路只用了积分。
+//
+// 锁还是留着：脚本会往 usage.json（在仓库目录里、不在沙箱内）写配置，两次同时跑会打架。
 'use strict'
 
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const LEDGER = path.join(os.homedir(), '.whalepet', 'ledger.jsonl')
-const PLUGIN_DIR = path.join(os.homedir(), '.whalepet', 'providers')
-const LOCK = path.join(os.homedir(), '.whalepet', '.ledger-test.lock')
+// 沙箱。必须在 require ../usage 之前设好 —— api.js 在 require 时就把 PLUGIN_HOME 定下来了。
+const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'whalepet-test-'))
+process.env.WHALEPET_HOME = SANDBOX
+
+const LEDGER = path.join(SANDBOX, '.whalepet', 'ledger.jsonl')
+const PLUGIN_DIR = path.join(SANDBOX, '.whalepet', 'providers')
+// 锁放在**系统临时目录**、不放沙箱里：沙箱是每次跑都新建的，各跑各的锁等于没有锁。
+const LOCK = path.join(os.tmpdir(), 'whalepet-ledger-test.lock')
 const TMP_ID = 'zz-tmp-remove-test'
 const TMP_FILE = path.join(PLUGIN_DIR, TMP_ID + '.js')
 
@@ -63,30 +71,35 @@ function check(ok, label, extra) {
   else { fail += 1; console.log('  \u2717 ' + label + (extra ? '  -> ' + extra : '')) }
 }
 
-/* 两条北京时间「今天」的记录 + 一条「昨天」的。昨天那条绝不能被算进来。 */
+/* 两条北京时间「今天」的记录 + 一条「昨天」的。昨天那条绝不能被算进来。
+ *
+ * 时间戳锚在**当天的固定时刻**，不要用「40 分钟前」这类相对偏移 ——
+ * 那样在午夜刚过时跑测试，「40 分钟前」就已经掉到昨天去了，
+ * 「今日金额 = ¥1.25」这几条断言必然失败（实测在 00:0x 踩到过，还很迷惑：
+ * 代码什么都没改，白天跑全绿、夜里跑红）。 */
 const BJ = 8 * 60 * 60 * 1000
 function iso(ms) {
   return new Date(ms + BJ).toISOString().replace('Z', '+08:00')
 }
 const now = Date.now()
-const tToday1 = now - 40 * 60 * 1000
-const tToday2 = now - 12 * 60 * 1000
-const tYesterday = now - 26 * 60 * 60 * 1000
+const noon = new Date(now)
+noon.setHours(12, 0, 0, 0)
+const tToday1 = noon.getTime() - 60 * 60 * 1000           // 今天 11:00
+const tToday2 = noon.getTime()                            // 今天 12:00
+const tYesterday = noon.getTime() - 24 * 60 * 60 * 1000   // 昨天 12:00
 
-const backup = fs.existsSync(LEDGER) ? fs.readFileSync(LEDGER, 'utf8') : null
-const backupTmp = fs.existsSync(TMP_FILE) ? fs.readFileSync(TMP_FILE, 'utf8') : null
 let restoreDone = false
 function restore() {
   if (restoreDone) return
   restoreDone = true
   try {
-    if (backup === null) fs.rmSync(LEDGER, { force: true })
-    else fs.writeFileSync(LEDGER, backup, 'utf8')
-    if (backupTmp === null) fs.rmSync(TMP_FILE, { force: true })
-    else fs.writeFileSync(TMP_FILE, backupTmp, 'utf8')
-    // 配置也要还原。**这个必须做**：下面会故意卸载 workbuddy 来验「内置插件也能卸载」，
+    // 账本和临时插件都在沙箱里，整个目录删掉就行 —— 不需要"备份再写回"。
+    // 那套写回是有毒的：上一次被 Ctrl-C 留下的测试账本，下一次会被当成"用户的原样"再写回去。
+    fs.rmSync(SANDBOX, { recursive: true, force: true })
+    // 配置必须还原。**这个必须做**：下面会故意卸载 workbuddy 来验「内置插件也能卸载」，
     // 而卸载会把它的字段（ctx / workbuddy）从显示列表里摘掉 —— 不还原的话，
     // 跑一次测试就把用户的信息条配置改小了，而且不会有任何提示。
+    // （usage.json 在仓库目录里、不在沙箱内，所以这一项还是得手工还原。）
     for (const [id, on] of Object.entries(originalInstalled)) usage.installProvider(id, on)
     usage.setFields(originalFields)
   } catch (err) {
@@ -99,6 +112,19 @@ function restore() {
 process.on('exit', restore)
 
 fs.mkdirSync(PLUGIN_DIR, { recursive: true })
+// 把**用户真实的插件**只读拷进沙箱：测试要验的就是「用户级插件这条路是通的」，
+// 沙箱里没有插件就什么都验不了。拷进来之后，真文件一个字都不会被碰。
+const REAL_USER_DIR = path.join(os.homedir(), '.whalepet', 'providers')
+let seeded = []
+if (fs.existsSync(REAL_USER_DIR)) {
+  for (const name of fs.readdirSync(REAL_USER_DIR)) {
+    if (!name.endsWith('.js') || name.startsWith('zz-tmp-')) continue  // 跳过历史遗留的测试插件
+    fs.copyFileSync(path.join(REAL_USER_DIR, name), path.join(PLUGIN_DIR, name))
+    seeded.push(name)
+  }
+}
+console.log('沙箱 ' + SANDBOX)
+console.log('  拷进用户插件 ' + (seeded.length ? seeded.join(', ') : '（无）'))
 fs.writeFileSync(LEDGER, [
   '# 临时账本（测试用，跑完会恢复）',
   '# 昨天那条应当被排除在「今日」之外',
@@ -111,8 +137,15 @@ fs.writeFileSync(LEDGER, [
 const usage = require('../usage')
 
 // 进来时的原始配置，跑完由 restore() 还原（见上面那段注释）。
-const originalFields = usage.publicConfig().fields.slice()
+//
+// 但 `TMP_ID` 自己的痕迹**不能**算进"原始配置"：上一次跑测试被 Ctrl-C / 被杀掉时，
+// 它留下的插件文件和 installed 标记会被这一次当成"原本就有"，然后再原样写回去 ——
+// 于是这个临时插件就永远留在用户的配置里了（实测就是这样留了十几个小时，
+// 表现是面板的「字段」页多出一个「临时 zz-tmp-remove-test-f」）。
+// 所以这个名字一律当作自己的东西丢掉，不管它进没进来。
+const originalFields = usage.publicConfig().fields.filter(f => f !== TMP_ID + '-f')
 const originalInstalled = { ...usage.publicConfig().installed }
+delete originalInstalled[TMP_ID]
 
 console.log('一、装载与身份')
 let list = usage.listProviders()

@@ -25,9 +25,10 @@
 // 自带的 better-sqlite3 又是按别的 ABI 编的。所以借 api.sqliteQuery —— 它会去起
 // WorkBuddy 自己那个 Node 22 的子进程。借不到就静默退回日志源，功能不受影响。
 //
-// 「缓存未命中」是第三个源：~/.workbuddy/projects/<工作区>/<会话>.jsonl 里每条模型
+// 「缓存命中」是第三个源：~/.workbuddy/projects/<工作区>/<会话>.jsonl 里每条模型
 // 调用的 providerData.rawUsage。上面两个源都没有这个字段 —— 日志里只有 shouldCompact
 // 和 credit —— 所以只能另起一路，见 scanTodayTail()。
+// 账本里存的是 hit / miss 两个 token 数，桌面上显示的是**命中率**（hit/(hit+miss)）。
 'use strict'
 
 const meta = {
@@ -43,7 +44,10 @@ const meta = {
   fields: [
     { id: 'ctx', label: '上下文', desc: '本轮会话的实时上下文 token 占用' },
     { id: 'workbuddy', label: 'WB 今日', unit: 'credit', desc: 'WorkBuddy 今日消耗的积分' },
-    { id: 'wbcache', label: '缓存未命中', desc: '今日所有调用里 prompt 缓存未命中的占比，越低越省（命中部分按缓存价计）' },
+    // id 保留 `wbcache` 不动：它是**用户配置里的键**（usage.json 的 fields 数组），
+    // 改了 id 会让已经勾上这一项的人下次启动时字段被静默摘掉。改的只是含义和
+    // 显示名 —— 从「未命中率」换成「命中率」，同一个数，换了个更直观的说法。
+    { id: 'wbcache', label: '缓存命中', desc: '今日所有调用里 prompt 缓存命中的占比，越高越省（命中的那部分按缓存价计费）' },
   ],
   // 阈值按**单条 credit** 定（每条 = 一次模型调用）。实测单条中位数 0.09、均值 0.11、
   // 最大 1.7，所以 0.5 / 0.1 大致对应「1% 暴击、四成普通痛」—— 一次落盘的一批
@@ -63,7 +67,7 @@ const BJ_OFFSET_MS = 8 * 60 * 60 * 1000
 /* ---------- 缓存命中（projects/<工作区>/<会话>.jsonl） ----------
  * 每条模型调用是一条 JSONL 记录，providerData.rawUsage 里有：
  *   "prompt_cache_hit_tokens":35200,"prompt_cache_miss_tokens":415
- * 未命中率 = miss / (hit + miss)。
+ * 命中率 = hit / (hit + miss)。
  *
  * 取数的两个坑，都是实测出来的：
  *  1. 记录行以 {"id":"…","parentId":…,"timestamp":… 开头，所以**锚在行首**取时间戳。
@@ -96,8 +100,12 @@ const LIVE_SQL = 'select session_id, credit_json from session_usage'
 // 多久问一次 db。每问一次都要起一个 Node 子进程（约 60~100ms CPU），所以别贴着
 // 宿主 2.5s 的轮询走 —— 5 秒对「看着数字往上爬」已经完全够用（日志那边可是分钟级）。
 const LIVE_INTERVAL_MS = 5000
-// 连续失败几次就彻底放弃实时源，别每轮白起进程
+// 连续失败就退避，别每轮白起进程。**不永久放弃**：db 被写方短暂锁住（WorkBuddy
+// 提交事务的瞬间）、机器卡一下，都可能连吃几次失败 —— 早先 3 次就判死刑，之后
+// 整个会话都退回分钟级的日志源，用户看到的就是「积分半天不跳、也不实时扣血」。
+// 现在连吃 LIVE_MAX_FAILS 次后指数退避，最长 5 分钟必重探一次；探通立刻恢复秒级。
 const LIVE_MAX_FAILS = 3
+const LIVE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
 /**
  * UUIDv7 的前 12 位 hex 就是毫秒时间戳 —— WorkBuddy 的 rootRequestId 正是 v7，
@@ -144,11 +152,12 @@ function create(api) {
     logFiles: 0, // 本轮扫到的日志文件数。credit 那两项的「有没有数据」看它
     detail: '未找到日志目录',
     live: {
-      ok: null, // null=还没结论 / true=能用 / false=已放弃
+      ok: null, // null=还没结论 / true=能用 / false=退避中（到点重探，不再永久放弃）
       fails: 0,
       pending: false,
       nextAt: 0,
       at: 0,
+      lastTry: 0, // 上次发起查询的时刻：退避计时用，与「上次成功」的 at 分开
       armed: false, // 首次快照只建基线，不放动画
     },
     // 缓存命中：每个会话文件一份子账，今日合计**求和**得出 —— 和上面的 credit 账本
@@ -221,14 +230,20 @@ function create(api) {
    */
   function tickLive(now) {
     const L = state.live
-    if (L.ok === false || L.pending || now < L.nextAt) return
+    if (L.pending || now < L.nextAt) return
+    // 失败退避：第 n 次连续失败后等 2^n 秒（封顶 5 分钟）。没失败过就是常规 5 秒节拍。
+    // 用 lastTry 计时（不能用 L.at —— 那是「上次成功」的时刻，首次失败时它还是 0，
+    // 会让退避完全失效）。
+    const backoff = L.fails > 0 ? Math.min(1000 * 2 ** L.fails, LIVE_BACKOFF_MAX_MS) : LIVE_INTERVAL_MS
+    if (L.ok === false && now - (L.lastTry || 0) < backoff) return
+    L.lastTry = now
     L.nextAt = now + LIVE_INTERVAL_MS
     L.pending = true
     api.sqliteQuery(DB_FILE, LIVE_SQL).then(rows => {
       L.pending = false
       if (!rows) {
         L.fails += 1
-        if (L.fails >= LIVE_MAX_FAILS) L.ok = false // 本机读不了，安静退回日志源
+        if (L.fails >= LIVE_MAX_FAILS) L.ok = false // 退避模式：到点还会重探，不再一锤定音
         return
       }
       L.fails = 0
@@ -690,36 +705,34 @@ function create(api) {
           : '未找到 WorkBuddy 日志',
       })
 
-      // 缓存未命中：只统计 prompt 部分。新开一轮对话时命中率天然很差（没有前缀可复用），
-      // 所以阈值定得比「单次」宽 —— 这是**今日合计**，一整天下来正常在个位数百分比。
+      // 缓存命中：只统计 prompt 部分。这里是 hit / miss 分列的口径，用 'pair'。
+      // 新开一轮对话时命中率天然很差（没有前缀可复用），所以这是**今日合计**，
+      // 一整天下来正常在九成上下；掉到六成以下说明前缀没复用上，值得看一眼。
       const ct = cacheTotals()
-      const cacheTotal = ct.hit + ct.miss
-      if (cacheTotal > 0) {
-        const pct = ct.miss / cacheTotal * 100
+      const rate = api.cacheHit.rate({ mode: 'pair', hit: ct.hit, miss: ct.miss })
+      if (rate) {
         const lastTotal = ct.lastHit + ct.lastMiss
         const lines = [
-          'prompt 缓存未命中 ' + pct.toFixed(1) + '%（今日 ' + ct.calls + ' 次调用）',
-          '  命中 ' + ctx.fmtTokens(ct.hit) + ' token · 未命中 ' + ctx.fmtTokens(ct.miss) + ' token',
-        ]
+          'prompt 缓存命中 ' + rate.pct.toFixed(1) + '%（今日 ' + ct.calls + ' 次调用）',
+        ].concat(api.cacheHit.detail({ mode: 'pair', hit: ct.hit, miss: ct.miss }, ctx.fmtTokens))
         if (ct.lastAt) {
-          lines.push('  最近一次 ' + (lastTotal > 0 ? (ct.lastMiss / lastTotal * 100).toFixed(1) + '%' : '--')
+          lines.push('  最近一次 ' + (lastTotal > 0 ? (ct.lastHit / lastTotal * 100).toFixed(1) + '%' : '--')
             + '（' + bjClock(ct.lastAt) + '）')
         }
-        lines.push('  越低越省：命中的那部分按缓存价计费')
         out.push({
           id: 'wbcache',
-          label: '缓存未命中',
-          value: pct.toFixed(1) + '%',
-          tone: pct >= 50 ? 'danger' : (pct >= 25 ? 'warn' : ''),
+          label: '缓存命中',
+          value: rate.pct.toFixed(1) + '%',
+          tone: api.cacheHit.tone(rate.pct),
           title: lines.join('\n'),
         })
       } else {
         out.push({
           id: 'wbcache',
-          label: '缓存未命中',
+          label: '缓存命中',
           value: '--',
           tone: 'off',
-          title: '今天还没读到带缓存字段的调用记录\n数据来自 ~/.workbuddy/projects 下的会话 jsonl',
+          title: api.cacheHit.EMPTY_HINT + '\n数据来自 ~/.workbuddy/projects 下的会话 jsonl',
         })
       }
       return out

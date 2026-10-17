@@ -2,11 +2,13 @@
 node_modules/
 
 # 本机运行产生的配置：
-#   config.json —— 位置 / 大小 / 置顶 / 形象
-#   usage.json  —— 装了哪些插件、信息条显示哪些字段
-# 这两份是「这台机器上的选择」，不该跟着仓库走。
+#   config.json        —— 位置 / 大小 / 置顶 / 形象
+#   usage.json         —— 装了哪些插件、信息条显示哪些字段
+#   usage-history.json —— 每日用量账本（用量面板画趋势用）
+# 这三份是「这台机器上的选择 / 这台机器上的用量」，不该跟着仓库走。
 config.json
 usage.json
+usage-history.json
 
 # 验收脚本的产出（截图 + 启动报告），重跑脚本会重新生成
 tools/startup-report.json

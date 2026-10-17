@@ -10,6 +10,12 @@
   <link rel="stylesheet" href="pet.css" />
 </head>
 <body>
+  <!-- 两层叠着放，#pet 在上。切片段时把**上一帧**留在下面淡出去，新帧一直是不透明的
+       —— 见 pet.css 的 #pet-prev 和 pet.js 的 crossFadeFrom()。
+       早先是同一张 <img> 上把 opacity 从 0.45 淡到 1，而窗口是透明的：那 90ms 里
+       整只鱼是半透明的，桌面上看着就是「闪一下」——眨眼和打起精神一个片段进出各淡一次，
+       所以看得最明显。两层各自的 opacity 都 ≥1 起跳，合成后不会出现半透明的那一瞬。 -->
+  <img id="pet-prev" alt="" draggable="false" aria-hidden="true" />
   <img id="pet" alt="傻鱼" draggable="false" />
   <!-- 扣费数字层：每花一笔就在鱼身上多加一行「-0.09」。数值和单位由主进程排好
        （usage.js 的 hitOf），这一层只负责画。整层 pointer-events:none，不吃鼠标事件，

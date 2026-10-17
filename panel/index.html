@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'" />
+  <title>用量面板 · 鲸鱼娘桌宠</title>
+  <!-- pills.css 是三个窗口共用的（信息条 / 面板预览 / 这里的历史明细），
+       所以顺序上要先来，再由 panel.css 覆盖成本窗口的样子。 -->
+  <link rel="stylesheet" href="../shared/pills.css" />
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <aside class="nav">
+    <div class="brand">
+      <span class="brand-title">用量面板</span>
+      <span class="brand-sub" id="nav-ver"></span>
+    </div>
+    <button class="nav-item on" data-page="overview">
+      概览<span class="nav-count" id="ov-count"></span>
+    </button>
+    <button class="nav-item" data-page="daily">每日</button>
+    <button class="nav-item" data-page="source">
+      来源<span class="nav-count" id="src-count"></span>
+    </button>
+    <button class="nav-item" data-page="fields">
+      字段<span class="nav-count" id="field-count"></span>
+    </button>
+    <div class="nav-foot">
+      <span class="muted" id="poll-hint"></span>
+    </div>
+  </aside>
+
+  <main class="content">
+    <!-- ① 概览：今天怎么样 -->
+    <section class="page on" id="page-overview">
+      <h2>今日</h2>
+      <div class="cards" id="ov-cards"></div>
+
+      <h2>最近 7 天</h2>
+      <div class="chart-box">
+        <div class="chart-head">
+          <div class="seg" id="ov-metric">
+            <button data-metric="tokens" class="on">token</button>
+            <button data-metric="credit">积分</button>
+            <button data-metric="cost">¥ 金额</button>
+          </div>
+          <span class="muted" id="ov-peak"></span>
+        </div>
+        <div class="chart" id="ov-chart"></div>
+      </div>
+
+      <h2>各来源</h2>
+      <div class="cards" id="ov-sources"></div>
+    </section>
+
+    <!-- ② 每日：趋势 + 逐日明细 -->
+    <section class="page" id="page-daily">
+      <h2>每日用量</h2>
+      <div class="chart-box">
+        <div class="chart-head">
+          <div class="seg" id="dl-metric">
+            <button data-metric="tokens" class="on">token</button>
+            <button data-metric="credit">积分</button>
+            <button data-metric="cost">¥ 金额</button>
+            <button data-metric="calls">次数</button>
+          </div>
+          <div class="seg" id="dl-range">
+            <button data-days="7">7 天</button>
+            <button data-days="14">14 天</button>
+            <button data-days="30" class="on">30 天</button>
+          </div>
+        </div>
+        <div class="chart tall" id="dl-chart"></div>
+        <div class="chart-foot" id="dl-summary"></div>
+      </div>
+
+      <h2>逐日明细</h2>
+      <table class="tbl" id="dl-table">
+        <thead>
+          <tr><th>日期</th><th class="num">token</th><th class="num">积分</th><th class="num">¥ 金额</th><th class="num">次数</th></tr>
+        </thead>
+        <tbody id="dl-body"></tbody>
+      </table>
+    </section>
+
+    <!-- ③ 来源：每个数据源的明细 -->
+    <section class="page" id="page-source">
+      <h2>数据源</h2>
+      <p class="hint">
+        每个来源各用一种量纲，<b>不做换算</b>：token 就是 token，积分就是积分，人民币就是人民币。
+        「累计」是面板里存下的历史合计（最多 30 天），「今日」是插件刚报上来的。
+      </p>
+      <div id="src-list"></div>
+    </section>
+
+    <!-- ④ 字段：桌宠信息条上显示什么（原来在设置里） -->
+    <section class="page" id="page-fields">
+      <h2>桌宠上显示</h2>
+      <p class="hint">
+        这一页管的是<b>桌宠脚下那条信息条</b>上出现哪些字段、按什么顺序。
+        点「添加」把它挂上去，顺序用 ↑↓ 调 —— 桌宠上就按这个顺序排。
+      </p>
+      <div class="field-add" id="field-add"></div>
+      <h3>已显示（<span id="field-n">0</span>）</h3>
+      <div class="field-list" id="field-list"></div>
+      <h3 class="muted">可添加的字段</h3>
+      <div class="field-pool" id="field-pool"></div>
+    </section>
+  </main>
+
+  <script src="../shared/pills.js"></script>
+  <script src="../shared/cachehit.js"></script>
+  <script src="chart.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

@@ -13,20 +13,81 @@ html, body {
   -webkit-user-select: none;
 }
 
-#pet {
+/* 桌宠本体是**两层**：#pet 在上（当前帧、接鼠标事件），#pet-prev 在下（上一帧，
+   只在切片段的那 90ms 里露出来）。两层的几何必须逐像素一致，否则交叉淡出会看出错位。
+   上面留给傻鱼，底部让出信息条。
+   用 max-height + max-width 双约束（等价 object-fit: contain）而不是写死 height：
+   帧画布是 420×462，写死 height 时 width:auto 会推出窗口（窗口只有 ~385 DIP 宽），
+   而绝对定位元素一旦溢出，`margin:auto` 会退化成 0，图就被挤到左边去了。 */
+#pet, #pet-prev {
   position: absolute;
   top: 2px;
   left: 0; right: 0;
   margin: 0 auto;
-  /* 上面留给傻鱼，底部让出信息条。
-     用 max-height + max-width 双约束（等价 object-fit: contain）而不是写死 height：
-     帧画布是 420×480，写死 height 时 width:auto 会推出窗口（窗口只有 ~385 DIP 宽），
-     而绝对定位元素一旦溢出，`margin:auto` 会退化成 0，图就被挤到左边去了。 */
   max-height: calc(100% - var(--usage-h) - 4px);
   max-width: 100%;
   width: auto;
   height: auto;
+}
+
+#pet {
   cursor: grab;
+  /* 红闪的强度：见下面的 petHurt。暴击时由 #pet.hurt.crit 抬高 */
+  --hurt-boost: 1.12;
+  --hurt-tint: 11;
+}
+
+/* 上一帧：只负责淡下去。不吃鼠标事件（不然拖鱼/点鱼会被这层挡住），
+   也不加 transition 之外的东西 —— 它始终在 #pet 下面，被新帧盖住的部分看不见。 */
+#pet-prev {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms linear;
+}
+
+/* 受击那一下的「红闪」：整只鱼偏红 + 提亮一下，再落回去。
+   用 filter 而不是叠一层红色 div：叠层会把整块矩形染红（窗口是透明的，
+   矩形边界看得出来），filter 只作用在不透明像素上，闪的是鱼本身。
+   只放在 #pet 上 —— 它永远不透明，正在淡出的 #pet-prev 不参与，省一次全图滤镜。
+
+   配方为什么长这样：这只鱼的主色是**蓝**，单纯提高饱和/vue 旋转只会得到紫色。
+   先用 sepia(1) 把整只鱼压成一层暖底（蓝→暖灰），再 saturate 到 11 把它推到亮橙，
+   最后 hue-rotate(-46deg) 落到红。少了 sepia 这一步，闪出来的是「发灰」而不是「红」。 */
+#pet.hurt {
+  animation: petHurt 240ms ease-out;
+}
+
+/* 暴击闪得更狠、更久一点：同一个 keyframes，只把强度抬上去 */
+#pet.hurt.crit {
+  animation-duration: 380ms;
+  --hurt-boost: 1.2;
+  --hurt-tint: 14;
+}
+
+/* 连击（900ms 内连着两次重击，规则照 dsh-damage-pulse）：最狠那一档再抬一档，
+   并加一点左右抖动 —— 单看颜色已经分不出「又挨了一下」和「一直红着」，
+   抖起来才像被连着揍。时长也放到 480ms（= pet.js 里摘类的时间）。 */
+#pet.hurt.crit.combo {
+  animation: petHurt 480ms ease-out, petCombo 480ms linear;
+  --hurt-boost: 1.26;
+  --hurt-tint: 17;
+}
+
+/* 抖动幅度只有 3px：桌宠窗口不大，抖太狠会看着像掉帧 */
+@keyframes petCombo {
+  0%, 100% { transform: translateX(0); }
+  12% { transform: translateX(-3px); }
+  30% { transform: translateX(2.4px); }
+  48% { transform: translateX(-1.8px); }
+  66% { transform: translateX(1.2px); }
+  84% { transform: translateX(-.6px); }
+}
+
+@keyframes petHurt {
+  0%   { filter: none; }
+  8%   { filter: brightness(var(--hurt-boost)) sepia(1) saturate(var(--hurt-tint)) hue-rotate(-46deg); }
+  42%  { filter: brightness(1.04) sepia(1) saturate(7) hue-rotate(-38deg); }
+  100% { filter: none; }
 }
 
 /* ---------- 扣费数字（用多少扣多少） ----------
@@ -81,6 +142,12 @@ html, body {
   opacity: .82;
 }
 
+/* 充值复活那条：绿色、带个「+」号（数字由 pet.js 拼好）。
+   和扣血的红字形成对照 —— 一眼就知道这条是钱回来了，不是又花掉了。 */
+.hit-num.heal {
+  color: #1f9d55;
+}
+
 /* 顶上来 → 顿一下 → 往上走并淡出。
    translate 只走十几像素：位置主要由 flex 排版决定，这里加的是一点「被顶上来」的动势。
    （用 transform 而不是改 margin，才不会每帧都重排整个列表。） */
@@ -127,6 +194,11 @@ html, body {
 /* 长时间没有扣费时进一步淡出，有新账立刻恢复 —— 这样它常驻但不吵 */
 #usage.idle { opacity: .55; }
 #usage.idle:hover { opacity: 1; }
+
+/* 一个字段都没勾（设置里全勾掉是正常操作）：整条收掉，连那个空心圆角框一起 ——
+   否则鱼脚下会杵着一个空框，看着像界面坏了，还照占窗口高度、挡住底下的桌面点击。
+   用 visibility 而不是 display：位置和高度是主进程按量出来的值定的，留个盒子更稳。 */
+#usage.hidden { visibility: hidden; opacity: 0; }
 
 /* 刚发生扣费：边框与投影亮一下，视线能扫到 */
 #usage.pulse {

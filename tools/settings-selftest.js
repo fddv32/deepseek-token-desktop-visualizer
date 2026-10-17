@@ -49,11 +49,19 @@ const HELPERS = `
   const navs = () => Array.from(document.querySelectorAll('.nav-item'));
   const curPage = () => { const b = navs().find(x => x.classList.contains('on')); return b ? b.dataset.page : ''; };
   const pageShown = id => { const p = document.getElementById('page-' + id); return !!p && p.offsetParent !== null; };
+  // 等它真的切过去，而不是固定 sleep 一下就去读。
+  // 固定等 500ms 在机器忙的时候不够（形象换了更大的帧之后实测踩到过）：
+  // 表现是「导航项点了、页面还没换」，断言偶发失败 —— 而这种偶发最容易被当成
+  // 「测试不稳」放过，其实是断言的等待方式不对。
   async function go(id) {
     const b = navs().find(x => x.dataset.page === id);
     if (!b) return false;
-    if (!b.classList.contains('on')) await click(b);
-    return curPage() === id && pageShown(id);
+    if (!b.classList.contains('on')) b.click();
+    for (let i = 0; i < 25; i++) {
+      if (curPage() === id && pageShown(id)) return true;
+      await sleep(100);
+    }
+    return false;
   }
 `
 
@@ -238,8 +246,8 @@ const PHASE_C = `(async () => {${HELPERS}
     list.every(t => !!t.querySelector('.trig-desc')));
 
   // ---- 默认名单 ----
-  check('待机随机里是 歪头放电 / 双手叉腰 / 打起精神',
-    chipNames(trigOf('待机随机')).join(',') === '歪头放电,双手叉腰,打起精神',
+  check('待机随机里是 歪头放电 / 原地晃晃 / 打起精神',
+    chipNames(trigOf('待机随机')).join(',') === '歪头放电,原地晃晃,打起精神',
     chipNames(trigOf('待机随机')).join(','));
   check('偶尔眨眼里是 眨眼', chipNames(trigOf('偶尔眨眼')).join(',') === '眨眼',
     chipNames(trigOf('偶尔眨眼')).join(','));
@@ -302,7 +310,7 @@ const PHASE_C = `(async () => {${HELPERS}
   // 这不是「顺手多验一条」：验收会真的改用户配置，收不干净用户下次打开面板会发现
   // 自己的搭配被改过。所以「回到默认」是硬断言，不是注释里的一句承诺。
   const DEFAULT_LISTS = {
-    '待机随机': '歪头放电,双手叉腰,打起精神',
+    '待机随机': '歪头放电,原地晃晃,打起精神',
     '偶尔眨眼': '眨眼',
     '单击摸摸': '轻痛,普通痛',
     '双击': '开心（双击）',
@@ -320,7 +328,7 @@ const PHASE_C = `(async () => {${HELPERS}
   if (box) { box.scrollIntoView({ block: 'center' }); await sleep(400); }
 
   // ---- 试演放最后：主进程点完就抓桌宠，抓到的才是动作本身 ----
-  const nm = chipOf(trigOf('待机随机'), '双手叉腰').querySelector('.nm');
+  const nm = chipOf(trigOf('待机随机'), '原地晃晃').querySelector('.nm');
   check('胶囊上的名字是可点的按钮（点一下 = 试演）', !!nm);
   if (nm) {
     nm.click();

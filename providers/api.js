@@ -12,6 +12,14 @@ const path = require('path')
 const { spawn } = require('child_process')
 
 const HOME = os.homedir()
+// 插件眼里的「家目录」（`~` 展开成什么）。默认就是真实家目录。
+//
+// 为什么留一个覆盖口：`tools/test-user-plugin.js` 会往 `~/.whalepet/ledger.jsonl` 里写
+// 测试账目来验「跨天过滤 / 受击档位」，可**桌宠可能正在运行** —— 它一 poll 就把测试数据
+// 当成真实消费记进用量账本，而且用量账本是按天累加的，事后还原账本也擦不掉。实测就踩过：
+// 面板里凭空多出「1.8 万 token · ¥1.25 · 2 次」，用户一路只用了积分，自然是满头问号。
+// 现在测试把自己关进临时目录（WHALEPET_HOME），真账本一个字都不会被碰。
+const PLUGIN_HOME = process.env.WHALEPET_HOME || os.homedir()
 const BJ_OFFSET_MS = 8 * 60 * 60 * 1000
 
 /* ---------- 北京时间 ---------- */
@@ -346,11 +354,14 @@ function walkFiles(root, opt = {}) {
   return out
 }
 
-/** 从 ~/... 形式展开到绝对路径，顺便做存在性判断，插件里不用自己拼 home。 */
+/** 从 ~/... 形式展开到绝对路径，顺便做存在性判断，插件里不用自己拼 home。
+ *
+ * 展开用的是 PLUGIN_HOME（可被 WHALEPET_HOME 覆盖），不是 HOME —— 只有它是能沙箱化的那个。
+ */
 function expand(p) {
   if (!p) return ''
-  if (p === '~') return HOME
-  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(HOME, p.slice(2))
+  if (p === '~') return PLUGIN_HOME
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(PLUGIN_HOME, p.slice(2))
   return p
 }
 
@@ -368,6 +379,17 @@ function parseIso(s) {
   return Number.isFinite(t) ? t : 0
 }
 
+/**
+ * 缓存命中率的口径归一（见 shared/cachehit.js）。
+ *
+ * 挂在这里是为了让插件**不用自己 require**：插件只拿到 api 这一套东西，
+ * 而各来源的账本字段是三套口径（hit/miss 分列 / input 不含缓存 / input 含缓存），
+ * 自己算很容易把命中率算成未命中率。用同一个函数就没有第二种口径。
+ *
+ *   api.cacheHit.rate({ mode: 'aside', input: t.input, hit: t.cacheRead, write: t.cacheWrite })
+ */
+const cacheHit = require('../shared/cachehit')
+
 /** 单位显示名。插件在 fields() 里写 `unit: 'token'`，渲染端就据此加个小字后缀。 */
 const UNIT_LABEL = { token: 'token', credit: '积分', CNY: '元' }
 
@@ -382,6 +404,7 @@ module.exports = {
   os,
   path,
   HOME,
+  PLUGIN_HOME,
   bjParts,
   bjDayKey,
   bjTodayStart,
@@ -396,4 +419,5 @@ module.exports = {
   sqliteQuery,
   UNIT_LABEL,
   withUnit,
+  cacheHit,
 }

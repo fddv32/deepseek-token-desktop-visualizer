@@ -18,9 +18,16 @@ const fs = require('fs')
 const usage = require('./usage')
 const triggers = require('./shared/triggers')
 const petsize = require('./shared/petsize')
+// 每日用量的账本（shared/history.js）。插件只报「今天」，过了零点就归零，
+// 所以历史必须主进程自己攒下来 —— 用量面板的折线图靠它。
+const usagehistory = require('./shared/history')
 
-const APP_VERSION = '1.2.0'
+const APP_VERSION = '1.3.0'
 const CONFIG_PATH = path.join(__dirname, 'config.json')
+// 每日用量的账本。插件只报「今天」，过了零点就归零 —— 历史得自己存（见 shared/usagehistory.js）。
+const HISTORY_PATH = path.join(__dirname, 'usage-history.json')
+// 保留多少天的历史。图表默认也画这么多天。
+const HISTORY_DAYS = 30
 const ASSETS_DIR = path.join(__dirname, 'assets')
 const REPORT_PATH = path.join(__dirname, 'tools', 'startup-report.json')
 // 窗口尺寸、以及「倍数最大能到多少」，算法都在 shared/petsize.js（纯几何，node 能直接测）。
@@ -70,16 +77,21 @@ const DEFAULT_SKIN = 'shayu'
  *   ms      每帧时长；给数组就逐帧用（长度不够时沿用最后一个）
  */
 const ACTIONS = [
-  { id: 'blink', label: '眨眼', slot: 'blink', ms: 56, frames: ['blink', 4],
-    desc: '保持当前姿势不动，只把左眼眨一下（整段约 0.22 秒）' },
+  // 三段硬切（睁 → 闭 → 睁），闭那一段停久一点。原来 4 帧里夹了个「半闭」，
+  // 那是把睁眼和闭眼各混一半 —— 虹膜和睫毛线叠成重影，脸上全是乱线（用户报过）。
+  { id: 'blink', label: '眨眼', slot: 'blink', ms: [56, 140, 56], frames: ['blink', 3],
+    desc: '保持当前姿势不动，把眼睛眨一下（睁 → 闭 → 睁，全程约 0.25 秒）' },
   { id: 'acting', label: '歪头放电', slot: 'idle', ms: 170, weight: 3, frames: ['acting', 8],
     desc: '待机时随机出现：歪一下头再回正' },
-  { id: 'hips', label: '双手叉腰', slot: 'idle', ms: 170, weight: 3, frames: ['hips', 8],
-    desc: '待机时随机出现：双手叉腰站着晃两下' },
-  { id: 'revive', label: '打起精神', slot: 'idle', ms: 340, weight: 1, frames: ['revive', 7],
-    desc: '待机时偶尔出现（比上面两个少见）：从没精神一路亮起来' },
-  { id: 'happy', label: '开心（双击）', slot: 'click', ms: [155, 825, 80, 85], frames: ['happy', 4],
-    desc: '左键双击时：蹲 → 蹦起来眨眼笑 → 落地' },
+  // 主体模板本身就是「叉腰站姿」（所有动作共用它），所以这个动作不再换姿势，
+  // 只是幅度大一点地站稳-晃-归位。帧数从 10 收到 8：原来首尾那两帧是拿 open 的
+  // 剪刀手做「起势/收势」的，换了模板之后那两帧反倒成了「换姿势」。
+  { id: 'hips', label: '原地晃晃', slot: 'idle', ms: 170, weight: 3, frames: ['hips', 8],
+    desc: '待机时随机出现：稳稳地晃两下再归位（幅度比待机呼吸大）' },
+  { id: 'revive', label: '打起精神', slot: 'idle', ms: 340, weight: 1, frames: ['revive', 8],
+    desc: '待机时偶尔出现（比上面两个少见）：从没精神一路亮起来，末帧落回站姿' },
+  { id: 'happy', label: '开心（双击）', slot: 'click', ms: [90, 155, 825, 80, 85], frames: ['happy', 5],
+    desc: '左键双击时：起势 → 蹲 → 蹦起来眨个左眼 → 落地' },
   { id: 'pain-weak', label: '轻痛', slot: 'hit', ms: [150, 470, 70, 100, 80, 80], frames: ['pain-weak', 6],
     desc: '小额扣费到账时的反应' },
   { id: 'pain-normal', label: '普通痛', slot: 'hit', ms: [150, 470, 70, 100, 80, 80], frames: ['pain-normal', 6],
@@ -116,7 +128,7 @@ const POLL_INTERVAL_MS = Number(process.env.WHALEPET_POLL_MS) > 0 ? Number(proce
 // 现在默认关掉，拖动时保持正常待机姿态；新形象也没有专门的「被拎起」素材，故这个开关暂时是空转的。
 const USE_DRAG_POSE = process.env.WHALEPET_DRAG_POSE === '1'
 
-const DEFAULT_CONFIG = { x: null, y: null, scale: DEFAULT_SCALE, alwaysOnTop: true, skin: DEFAULT_SKIN, triggers: null }
+const DEFAULT_CONFIG = { x: null, y: null, scale: DEFAULT_SCALE, alwaysOnTop: true, autoStart: false, skin: DEFAULT_SKIN, triggers: null }
 
 // 形象目录不存在时回落到存在的那个，避免 config.json 里写了个错名字就一片空白
 function resolveSkin(id) {
@@ -385,7 +397,7 @@ async function captureWindowTo(which, name, opt = {}) {
   const gap = opt.gap || 400
   await new Promise(r => setTimeout(r, opt.wait || 0))
 
-  const target = () => (which === 'settings' ? settingsWin : win)
+  const target = () => (which === 'settings' ? settingsWin : which === 'usage' ? panelWin : win)
   // 桌宠本来就是 alwaysOnTop，不用动它；只有普通窗口需要临时顶上去。
   let raised = null
   const t0 = target()
@@ -468,9 +480,22 @@ function frameGroups() {
   const { all, list } = actionsAvailable()
   const has = rel => all.includes(rel)
   const idle = Array.from({ length: 8 }, (_, i) => `frames/idle-${String(i + 1).padStart(2, '0')}.png`).filter(has)
+  // 帧目录版本号（最新 mtime）：进渲染端拼进 file:// 的 query。素材重新生成后
+  // 同名文件的 file:// 缓存不会自己失效，运行中的桌宠会一直放旧帧 —— 重启后
+  // 版本变，缓存才失效。见 renderer/pet.js 的 fileUrl。
+  let frameVersion = ''
+  try {
+    let newest = 0
+    for (const f of fs.readdirSync(path.join(ASSET_ROOT, 'frames'))) {
+      const st = fs.statSync(path.join(ASSET_ROOT, 'frames', f))
+      if (st.mtimeMs > newest) newest = st.mtimeMs
+    }
+    frameVersion = String(Math.round(newest))
+  } catch { /* 拿不到就让 URL 不带版本 —— 和旧行为一致 */ }
 
   return {
     assetRoot: ASSET_ROOT,
+    frameVersion,
     skin: SKIN.id,
     dragMode: DRAG_MODE,
     dragPose: USE_DRAG_POSE,
@@ -503,6 +528,7 @@ function appState() {
     scale: Number(cfg.scale) || DEFAULT_SCALE,
     skin: SKIN.id,
     alwaysOnTop: cfg.alwaysOnTop !== false,
+    autoStart: cfg.autoStart === true,
     skins: SKINS.map(s => ({ id: s.id, label: s.label, desc: s.desc || '' })),
     actions: actionState(),
   }
@@ -561,6 +587,72 @@ function setAlwaysOnTop(on) {
   return appState()
 }
 
+/* ---------- 开机自启 ----------
+ * 用系统的「登录时启动」项（Windows 就是注册表 Run 键），不需要管理员权限、也不装服务。
+ * 好处是用户能在「任务管理器 → 启动」里自己看到并关掉 —— 一个桌宠不该往系统里藏东西。
+ *
+ * 开发态（`electron .`）必须把应用目录当参数带上：execPath 是 electron.exe，不带参数的话
+ * 开机只会拉起一个空壳，桌宠反而不出来。
+ */
+function applyAutoStart(on) {
+  const opts = { openAtLogin: !!on, openAsHidden: false }
+  if (!app.isPackaged) {
+    opts.path = process.execPath
+    opts.args = [__dirname]
+  }
+  app.setLoginItemSettings(opts)
+}
+
+function setAutoStart(on) {
+  cfg = saveConfig({ autoStart: !!on })
+  applyAutoStart(cfg.autoStart)
+  return appState()
+}
+
+/** 系统里的实际状态和配置对一次。用户在「启动应用」里手工删掉条目时，配置就是唯一真相。 */
+function syncAutoStart() {
+  try {
+    const os = app.getLoginItemSettings()
+    if (!!os.openAtLogin !== (cfg.autoStart === true)) applyAutoStart(cfg.autoStart === true)
+  } catch (err) {
+    note('autostart:sync-failed', { message: String((err && err.message) || err) })
+  }
+}
+
+/* ---------- 收起到托盘 ----------
+ * 「收起来」不是 win.minimize()：桌宠是无边框透明窗，最小化会在任务栏留一个空图标，
+ * 而它本来就常驻托盘。所以直接 hide() —— 托盘图标还在，点一下就回来。
+ */
+function showPet() {
+  if (!win || win.isDestroyed()) return
+  win.show()
+  syncTray()
+}
+
+function hideToTray() {
+  if (!win || win.isDestroyed()) return
+  win.hide()
+  syncTray()
+}
+
+/** 托盘菜单第一项跟着「桌宠在不在」换字，所以每次状态变了都要重建一次。 */
+function trayMenu() {
+  const shown = !!(win && !win.isDestroyed() && win.isVisible())
+  return Menu.buildFromTemplate([
+    shown
+      ? { label: '收起到托盘', click: () => hideToTray() }
+      : { label: '显示桌宠', click: () => showPet() },
+    { label: '用量面板…', click: () => openPanelWindow() },
+    { label: '设置…', click: () => openSettingsWindow() },
+    { type: 'separator' },
+    { label: '退出', click: () => app.quit() },
+  ])
+}
+
+function syncTray() {
+  if (tray) tray.setContextMenu(trayMenu())
+}
+
 function buildTray() {
   // 托盘图标直接用形象根目录那张成品图（由 tools/make-shayu-frames.py 生成）；
   // 万一丢了就用空图标 —— 宁可没图标，也不要因为图标丢了整个托盘起不来
@@ -571,12 +663,12 @@ function buildTray() {
   if (tray) { tray.destroy(); tray = null }
   tray = new Tray(trayImg)
   tray.setToolTip(`鲸鱼娘桌宠 · ${SKIN.id}`)
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示', click: () => win && win.show() },
-    { label: '设置…', click: () => openSettingsWindow() },
-    { label: '退出', click: () => app.quit() },
-  ]))
-  tray.on('click', () => win && win.show())
+  tray.setContextMenu(trayMenu())
+  // 左键单击是开关：收着就放出来，放出来就收回去（Windows 上托盘左键本来就该「切回来」）
+  tray.on('click', () => {
+    if (win && !win.isDestroyed() && win.isVisible()) hideToTray()
+    else showPet()
+  })
 }
 
 /* ---------- 设置窗口（独立窗口） ---------- */
@@ -619,10 +711,76 @@ function openSettingsWindow() {
   require('./tools/verify-hooks.js').attachPanelVerify(settingsWin, { note, capture: captureWindowTo })
 }
 
-/** 两个窗口共用同一份主进程数据；有新快照就一起推。 */
+/* ---------- 用量面板（独立窗口） ---------- */
+
+let panelWin = null
+
+function openPanelWindow() {
+  if (panelWin && !panelWin.isDestroyed()) {
+    note('panel:reuse')
+    panelWin.show()
+    panelWin.focus()
+    return
+  }
+  note('panel:create')
+  panelWin = new BrowserWindow({
+    // 比设置窗口宽：顶部折线图要横向铺得开，来源页也是多列。
+    width: 880,
+    height: 730,
+    minWidth: 640,
+    minHeight: 460,
+    title: '用量面板 · 鲸鱼娘桌宠',
+    backgroundColor: '#eef4fc',
+    autoHideMenuBar: true,
+    skipTaskbar: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'panel', 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+  // hash 指定打开哪一页（概览 / 每日 / 来源 / 字段）。平时不带，
+  // 面板自己会记上次那一页；验收脚本用 WHALEPET_USAGE_PAGE 指哪抓哪。
+  panelWin.loadFile(path.join(__dirname, 'panel', 'index.html'), {
+    hash: process.env.WHALEPET_USAGE_PAGE || '',
+  })
+  panelWin.on('closed', () => { panelWin = null })
+
+  // 验收抓图：WHALEPET_CAPTURE_USAGE=1 时，面板加载完抓一张落盘。
+  // 和设置窗口那套一样用 capturePage，不去桌面上抓屏（窗口可能被别的挡住）。
+  if (process.env.WHALEPET_CAPTURE_USAGE === '1') {
+    setTimeout(() => captureWindowTo('usage', 'usage-panel.png', { wait: 2600 }), 1200)
+  }
+}
+
+/* ---------- 每日用量的账本 ----------
+ * 实现放在 shared/history.js（纯逻辑 + createStore 落盘，可被 node 直接测）。
+ * 记在 broadcastUsage 里而不是面板里：**面板没开的时候也要攒** ——
+ * 否则用户不开面板就永远没有历史，等他打开时图上只有今天一个点。
+ */
+
+let usageHistory = null
+
+function historyStore() {
+  if (!usageHistory) usageHistory = usagehistory.createStore(fs, HISTORY_PATH)
+  return usageHistory
+}
+
+/** 把这一轮的数字并进今天的记录（内部有 15 秒落盘节流）。 */
+function rememberUsageDay(snapshot) {
+  try {
+    historyStore().record(snapshot, Date.now())
+  } catch (err) {
+    note('history:record-failed', { message: String((err && err.message) || err) })
+  }
+}
+
+/** 三个窗口共用同一份主进程数据；有新快照就一起推。 */
 function broadcastUsage(snapshot) {
   if (win && !win.isDestroyed()) win.webContents.send('usage', snapshot)
   if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('usage', snapshot)
+  if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('usage', snapshot)
+  rememberUsageDay(snapshot)
 }
 
 /**
@@ -647,11 +805,13 @@ function refreshUsage() {
   })
 }
 
-/** 右键菜单：只留三项。功能都搬进设置窗口了，菜单不是功能清单。 */
+/** 右键菜单：只留必要的几项。功能都搬进设置窗口了，菜单不是功能清单。 */
 function buildMenu() {
   return Menu.buildFromTemplate([
     { label: '置顶', type: 'checkbox', checked: cfg.alwaysOnTop !== false, click: item => setAlwaysOnTop(item.checked) },
+    { label: '收起到托盘', click: () => hideToTray() },
     { type: 'separator' },
+    { label: '用量面板…', click: () => openPanelWindow() },
     { label: '设置…', click: () => openSettingsWindow() },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() },
@@ -760,6 +920,9 @@ function createWindow() {
   }
 
   win.on('closed', () => { win = null; app.quit() })
+  // 托盘菜单第一项的字跟着显隐变（「收起到托盘」↔「显示桌宠」）
+  win.on('show', syncTray)
+  win.on('hide', syncTray)
 }
 
 const gotLock = app.requestSingleInstanceLock()
@@ -790,6 +953,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     note('boot:whenReady')
+    syncAutoStart()
     createWindow()
     buildTray()
 
@@ -827,6 +991,21 @@ if (!gotLock) {
       ...extra,
     })
     ipcMain.handle('settings:load', () => bundle({ app: appState() }))
+
+    /* ---------- 用量面板 ---------- */
+    // 面板要的：一段历史（画折线）+ 范围内汇总（顶部指标卡）+ 字段目录。
+    // 之后靠 'usage' 事件持续更新今日那部分。
+    // 字段的增删复用 settings:fields（语义完全一样，没必要再开一个）。
+    ipcMain.handle('panel:data', () => {
+      const now = Date.now()
+      return bundle({
+        app: appState(),
+        catalog: usage.fieldCatalog(),
+        days: HISTORY_DAYS,
+        history: historyStore().summarize('30d', now),
+        todayHist: historyStore().summarize('today', now),
+      })
+    })
     ipcMain.handle('settings:scale', (_e, v) => bundle({ app: setScale(clampScale(v)) }))
     ipcMain.handle('settings:skin', (_e, id) => bundle({ app: setSkin(String(id)) }))
     // 时机名单：传整个数组（增 / 删 / 排序都是它），主进程负责收拾
@@ -834,8 +1013,13 @@ if (!gotLock) {
     // 试演不改配置，只让桌面上的桌宠立刻播一次
     ipcMain.handle('settings:preview', (_e, id) => previewAction(String(id)))
     ipcMain.handle('settings:ontop', (_e, on) => bundle({ app: setAlwaysOnTop(!!on) }))
+    ipcMain.handle('settings:autostart', (_e, on) => bundle({ app: setAutoStart(!!on) }))
     ipcMain.handle('settings:fields', (_e, ids) => {
       usage.setFields(Array.isArray(ids) ? ids : [])
+      return bundle()
+    })
+    ipcMain.handle('settings:quota', (_e, patch) => {
+      usage.setQuota(patch && typeof patch === 'object' ? patch : {})
       return bundle()
     })
     ipcMain.handle('settings:install', (_e, id, on) => {
@@ -868,6 +1052,10 @@ if (!gotLock) {
       if (settingsWin && !settingsWin.isDestroyed()) settingsWin.close()
     })
 
+    ipcMain.on('panel:close', () => {
+      if (panelWin && !panelWin.isDestroyed()) panelWin.close()
+    })
+
     /* ---------- 用量采集 ---------- */
     // 只在主进程做采集，渲染端纯展示：渲染端碰文件系统既没必要也不安全。
     // usage.poll() 是同步的，首轮要把当天日志读全文（几十到几百毫秒），
@@ -898,9 +1086,15 @@ if (!gotLock) {
 
       // 验收钩子：WHALEPET_OPEN_SETTINGS=1 时启动就打开设置窗口并抓一张图，
       // 不然要手动右键点菜单才能看到它长什么样。
-      // （旧变量名 WHALEPET_OPEN_PANEL 继续认，免得旧脚本忽然失效。）
+      //
+      // ⚠ 旧变量名 WHALEPET_OPEN_PANEL 指的是**设置**面板（当初那个窗口就叫 panel），
+      // 继续认它只是为了别让旧脚本忽然失效 —— **不要把它的语义改成用量面板**，
+      // 那会让所有写好的验证脚本静默地打开另一个窗口。用量面板用自己的名字。
       if (process.env.WHALEPET_OPEN_SETTINGS === '1' || process.env.WHALEPET_OPEN_PANEL === '1') {
         setTimeout(() => { note('settings:auto-open'); openSettingsWindow() }, 3500)
+      }
+      if (process.env.WHALEPET_OPEN_USAGE === '1') {
+        setTimeout(() => { note('usage:auto-open'); openPanelWindow() }, 3500)
       }
 
       // 验收用：WHALEPET_FAKE_HIT=2.5 会在启动 12 秒后伪造一笔扣费，
@@ -924,6 +1118,37 @@ if (!gotLock) {
                 source: 'workbuddy', amount, unit: 'credit', at: Date.now(), id: 'fake-hit',
                 hitValue: auto.hitValue, hitUnit: auto.hitUnit, level,
               })
+            }
+            // WHALEPET_FAKE_SPLIT=1：伪造「按费用构成拆开」的一笔账，外加一记紧接着的重击
+            // （连击）和一条充值飘字。用来验收四件新东西：①一笔变三条、②后缀（未命中/命中/输出）、
+            // ③字号只跟金额走（0.02 的输出大、0.001 的未命中反而小）、④连击更狠的红闪 + 绿色 +。
+            if (process.env.WHALEPET_FAKE_SPLIT === '1') {
+              const parts = usage.decorateEvents([
+                { amount: 0.001, unit: 'CNY', label: '未命中', level: 'critical', big: false },
+                { amount: 0.0026, unit: 'CNY', label: '命中', level: 'normal', big: false },
+                { amount: 0.0203, unit: 'CNY', label: '输出', level: 'weak', big: true },
+              ])
+              for (const p of parts) {
+                win.webContents.send('usage-event', {
+                  ...p, source: 'dsh', at: Date.now(), id: 'fake-split',
+                })
+              }
+              // 900ms 内再一记重击 -> combo（照 dsh-damage-pulse 的连击口径）
+              setTimeout(() => {
+                if (!win || win.isDestroyed()) return
+                win.webContents.send('usage-event', {
+                  source: 'dsh', at: Date.now(), id: 'fake-combo',
+                  hitValue: '¥0.003', hitUnit: '未命中', level: 'critical', big: false, combo: true,
+                })
+              }, 300)
+              // 充值：绿色 +（和扣血的红字对照）
+              setTimeout(() => {
+                if (!win || win.isDestroyed()) return
+                win.webContents.send('usage-event', {
+                  source: 'dsh', at: Date.now(), id: 'fake-heal',
+                  hitValue: '10.00', hitUnit: '元', heal: true,
+                })
+              }, 900)
             }
             // 抓帧按「事件」对齐，而不是按「启动后 N 秒」——冷启动耗时浮动，
             // 固定延时很容易抓空（实测两次相差 1.3 秒就完全错开了动画）。
@@ -952,6 +1177,12 @@ if (!gotLock) {
                     layer: [lr.x, lr.y, lr.width, lr.height],
                     view: [document.documentElement.clientWidth, document.documentElement.clientHeight],
                     count: items.length,
+                    // 逐条读回：文案 / 颜色 / 字号。验收「按费用构成拆成多条」「字号只跟金额走」
+                    // 「充值那条是绿的」全靠它 —— 光看截图分不清字号差 4px 和颜色差一档。
+                    items: items.map(e => {
+                      const s = getComputedStyle(e);
+                      return [e.textContent, s.color, s.fontSize].join(' | ');
+                    }),
                     box: ir ? [ir.x, ir.y, ir.width, ir.height] : null,
                     onTop: top ? (top.id || top.tagName + '.' + top.className) : null,
                     hiddenUnder: over,
@@ -993,6 +1224,8 @@ if (!gotLock) {
         clearInterval(usageTimer)
         usageTimer = null
       }
+      // 强制落盘：平时有 15 秒节流，退出这一下不写就会丢掉最近十几秒的数字。
+      try { historyStore().flush(true) } catch { /* 写不了就算了，别拦着退出 */ }
     })
   })
 

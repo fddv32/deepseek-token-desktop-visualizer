@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "start": "electron .",
-    "test": "node tools/test-triggers.js && node tools/test-hit.js && node tools/test-hit-pacing.js && node tools/test-scale.js && node tools/test-providers.js && node tools/test-user-plugin.js",
+    "test": "node tools/test-triggers.js && node tools/test-hit.js && node tools/test-hit-pacing.js && node tools/test-scale.js && node tools/test-cache-hit.js && node tools/test-usage-history.js && node tools/test-providers.js && node tools/test-user-plugin.js",
     "verify": "python tools/verify-panel.py"
   },
   "devDependencies": {

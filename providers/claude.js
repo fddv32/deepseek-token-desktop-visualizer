@@ -21,7 +21,10 @@ const meta = {
   unit: 'token',
   paths: ['~/.claude/projects'],
   desc: '读 assistant 行的 message.usage（含 cache_creation / cache_read）',
-  fields: [{ id: 'claude', label: 'Claude 今日', unit: 'token' }],
+  fields: [
+    { id: 'claude', label: 'Claude 今日', unit: 'token' },
+    { id: 'claudecache', label: 'Claude 缓存命中', desc: '今日输入里命中 prompt 缓存的占比，越高越省（命中的部分按缓存价计费）' },
+  ],
   // 阈值单位是这个来源自己的量纲（token）：单次 2 万算普通痛、6 万算暴击。
   // 编排层不换算，飘在鱼身上的就是这个 token 数。
   damage: [[60000, 'critical'], [20000, 'normal']],
@@ -121,24 +124,30 @@ function create(api) {
     get detail() { return state.detail },
     poll,
     raw(now) {
+      const t = state.today
+      // input 是**未缓存**的那部分（cache_read / cache_creation 单列）—— 'aside' 口径。
+      const cc = api.cacheHit.split({ mode: 'aside', input: t.input, hit: t.cacheRead, write: t.cacheWrite })
       return {
         available: state.available,
-        todayTokens: state.today.total,
-        todayInput: state.today.input,
-        todayOutput: state.today.output,
-        todayCacheRead: state.today.cacheRead,
-        todayCacheWrite: state.today.cacheWrite,
-        callsToday: state.today.calls,
+        todayTokens: t.total,
+        todayInput: t.input,
+        todayOutput: t.output,
+        todayCacheRead: t.cacheRead,
+        todayCacheWrite: t.cacheWrite,
+        callsToday: t.calls,
         lastCallAt: state.lastCallAt,
         active: now - state.updatedAt < 90 * 1000,
+        cacheHitTokens: cc.hit,
+        cacheMissTokens: cc.miss,
       }
     },
     fields(now, ctx) {
       const t = state.today
       const billable = t.input + t.output + t.cacheWrite
+      const co = { mode: 'aside', input: t.input, hit: t.cacheRead, write: t.cacheWrite }
       // 没数据时连单位一起收起来（和 codex / zcode / dsh / workbuddy 一致）
       const has = state.available && t.calls > 0
-      return [{
+      const out = [{
         id: 'claude',
         label: 'Claude 今日',
         unit: has ? 'token' : '',
@@ -150,6 +159,24 @@ function create(api) {
             + '  输出 ' + t.output + ' · 缓存命中 ' + t.cacheRead
           : '未找到 ~/.claude/projects 下的会话',
       }]
+
+      const cr = api.cacheHit.rate(co)
+      if (cr) {
+        const lines = ['prompt 缓存命中 ' + cr.pct.toFixed(1) + '%（今日 ' + t.calls + ' 次调用）']
+          .concat(api.cacheHit.detail(co, ctx.fmtTokens))
+        // 写缓存计入未命中，容易被当成算错，所以它有量的时候说明一句
+        if (t.cacheWrite > 0) lines.push('  （新写缓存 ' + t.cacheWrite + ' 算未命中：那是这次现算的，不是白捡的）')
+        out.push({
+          id: 'claudecache',
+          label: 'Claude 缓存命中',
+          value: cr.pct.toFixed(1) + '%',
+          tone: api.cacheHit.tone(cr.pct),
+          title: lines.join('\n'),
+        })
+      } else {
+        out.push({ id: 'claudecache', label: 'Claude 缓存命中', value: '--', tone: 'off', title: api.cacheHit.EMPTY_HINT })
+      }
+      return out
     },
   }
 }

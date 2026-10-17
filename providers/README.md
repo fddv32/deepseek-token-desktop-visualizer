@@ -93,6 +93,9 @@ function create(api) {
     poll,
     // raw() 的数字会被「今日已用」汇总字段读走：
     //   todayTokens 进 token 合计，todayCredit 进积分合计（没有就不填）。
+    //   ⚠ todayTokens 必须是**这个来源今天的 token 总量**（输入 + 输出 + 缓存命中 +
+    //   缓存写入）—— 漏掉缓存命中，桌面上就是「数字比真实值小一大截」，而且
+    //   会连带把「今日已用」的合计拖错（DSH 就栽在这儿，少报了 77 倍）。
     raw(now) {
       return { available: state.available, todayTokens: state.today.tokens, callsToday: state.today.calls }
     },
@@ -142,6 +145,7 @@ module.exports = { meta, create }
 | `bjDayKey(ts)` / `bjTodayStart(ts)` | UTC 毫秒 → 北京时间的 `YYYYMMDD` 整数 / 今天 00:00 的 UTC 毫秒 |
 | `parseIso(s)` / `num(v)` | ISO-8601 → UTC 毫秒 / 转数字（非法值给 0） |
 | `UNIT_LABEL` / `withUnit(v, unit)` | 单位显示名映射 / 拼「值 + 单位」（不想自己拼的时候用） |
+| `cacheHit` | 缓存命中率的口径归一：`cacheHit.rate({ mode, input, hit, miss, write })` → `{hit, miss, total, pct}` 或 `null`（一次调用都没有）。另见「缓存命中率」一节 |
 
 **`ctx` 里有什么**（`fields()` 用）
 
@@ -152,11 +156,42 @@ module.exports = { meta, create }
 | `ctx.ctxLimit` | 上下文窗口上限（默认 300000，`WHALEPET_CTX_LIMIT` 可改） |
 | `ctx.balance` | DeepSeek 余额状态（`{supported, value, currency, available, error}`） |
 
+**`todayTokens` 是「今天这只模型处理过的全部 token」**：输入（未命中缓存）+ 输出 + 缓存命中 + 缓存写入，四项相加。各家账本对 `input` 的口径并不一样（有的含缓存、有的不含，见下一节），只填自己能拿到的那部分、或者漏掉缓存命中，桌面上就是「数字比真实值小一大截」——**DSH 插件就栽在这里**：`inputTokens` 只是未命中那部分、命中在 `cacheReadTokens` 里，只加 input + output 时今天少报了 **77 倍**（30.0万 vs 2300万），连带「今日已用」合计一起错。拿不准就在 `fields()` 的悬停明细里把四项拆开写，用户一眼能对上账。
+
 **`emit(ev)` 的字段**：`{ source, amount, unit, at, id }`，其余字段随便加（会一起传给渲染端）。
 平台做两件事：拿 `amount` 和 `meta.damage` 比出受击**档位**（weak / normal / critical），
 再把 `amount` + `unit` 排版成鱼身上那句 `-多少`。**渲染端只认这两样**，不做任何业务判断，
 也不做任何换算 —— 至于这个档位播哪一段动作，是用户在设置面板里排的「扣费反应」名单，
 和你无关，也不用管。
+
+### 缓存命中率（如果要加这一项）
+
+信息条字段和用量面板的「来源」页都认同一对键，所以你要做两件事：
+
+1. `meta.fields` 里加一项（id 建议 `<插件id>cache`，label 写「XX 缓存命中」）；
+2. `raw()` 里给出 `cacheHitTokens` / `cacheMissTokens` 这一对。
+
+关键在于**这一对怎么从你的账本字段推出来**，各家的账本口径不一样，别照着别的插件抄：
+
+| mode | 你的账本长这样 | 怎么算 |
+| --- | --- | --- |
+| `pair` | 命中 / 未命中是两个独立字段 | `{ mode: 'pair', hit, miss }` |
+| `aside` | `input` 是**未缓存**的那部分，缓存读/写单列 | `{ mode: 'aside', input, hit, write }` |
+| `subset` | `input` 是**总输入**（已经含命中） | `{ mode: 'subset', input, hit }` |
+
+```js
+const cc = api.cacheHit.split({ mode: 'aside', input: t.input, hit: t.cacheRead, write: t.cacheWrite })
+// raw(): cacheHitTokens: cc.hit, cacheMissTokens: cc.miss
+// fields(): api.cacheHit.text({ mode: 'aside', input: t.input, hit: t.cacheRead, write: t.cacheWrite })
+```
+
+> `aside` 和 `subset` 差一倍，**光看字段名分不出来**：DSH 和 ZCode 的账本里都叫
+> `cacheReadTokens`，但 DSH 的 `inputTokens` 是未缓存的（`aside`）、ZCode 的是总输入
+> （`subset`）—— 同一条记录一个算出 98.4%、一个算出 87.7%。所以**算之前先拿真实账本
+> 验一次**：`aside` 的特征是「input 与缓存读**不相交**」（两者之和 = 总提示词），
+> `subset` 的特征是「缓存读是 input 的**子集**」（input 已经包含它，另外还能在原始
+> 提供方的元数据里对上，比如 ZCode 的 `providerMetadata.anthropic.usage`）。
+> 判错了不会有任何报错，只是数字差一倍 —— 而且看着都像那么回事。
 
 `unit` 就是你报账用的量纲，原样呈现给用户：
 
@@ -193,6 +228,7 @@ module.exports = { meta, create }
 | 数字后面的单位（积分 / token / ¥） | `meta.unit` + `fields()` 里的 `unit` |
 | 鱼身上飘的数字与单位 | `emit()` 里的 `amount` + `unit` |
 | 进「今日已用」合计 | `raw()` 里的 `todayTokens` / `todayCredit` |
+| 缓存命中率（信息条字段 + 用量面板「来源」页） | `meta.fields` 加一项 + `raw()` 里给出 `cacheHitTokens` / `cacheMissTokens` |
 | 设置里显示「读哪里」 | `meta.paths` |
 
 所以新插件一装好就自动出现在设置里、自动有单位后缀、自动进「今日已用」、扣费时自动

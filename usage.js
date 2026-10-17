@@ -26,9 +26,19 @@ const path = require('path')
 const registry = require('./providers')
 
 const CONFIG_PATH = path.join(__dirname, 'usage.json')
+// 每日历史账本（main.js 往里写，这里只读）：「剩余积分」的累计消耗从这来。
+const HISTORY_PATH = path.join(__dirname, 'usage-history.json')
 
 const DISABLED = process.env.WHALEPET_USAGE === '0'
-const POLL_MS = Number(process.env.WHALEPET_USAGE_MS) > 0 ? Number(process.env.WHALEPET_USAGE_MS) : 2500
+/* 采集周期。默认 1 秒 —— 扣费要**实时**：DSH 那个 dsh-damage-pulse 的
+ * `CHARGE_POLL_MS` 就是 1e3，桌面上的观感是「这边一调用完，鱼那边马上就掉血」。
+ *
+ * 敢压到 1s 是因为**一轮几乎不花钱**：首轮要把当天日志读全文（实测 ~40ms），
+ * 之后每个来源都走增量 tail，一轮只要 1~4ms（`tools/check-poll-cost.js` 可复跑）。
+ * 1s 一轮 ≈ 单核 0.2%。真嫌费电可以用 WHALEPET_USAGE_MS 调回去，余额那边的
+ * 60s 校准周期不受它影响（两者独立）。
+ */
+const POLL_MS = Number(process.env.WHALEPET_USAGE_MS) > 0 ? Number(process.env.WHALEPET_USAGE_MS) : 1000
 // 上下文窗口：日志里的 threshold=90.0% 只是压缩触发线，实测 totalTokens 涨到 21 万仍继续，
 // 所以取本地库里 session_usage.size 的口径（30 万）。这个值只用于显示百分比，可用环境变量覆盖。
 const CTX_LIMIT = Number(process.env.WHALEPET_CTX_LIMIT) > 0 ? Number(process.env.WHALEPET_CTX_LIMIT) : 300000
@@ -50,7 +60,20 @@ function loadConfig() {
   return {
     installed: { ...DEFAULT_INSTALLED, ...installed },
     fields: Array.isArray(raw.fields) ? raw.fields.filter(x => typeof x === 'string') : DEFAULT_FIELDS.slice(),
+    quota: readQuota(raw.quota),
   }
+}
+
+/* ---------- 额度快照 ----------
+ *
+ * WorkBuddy 没有公开的余额接口（db 和日志里都只有消耗、没有总额度），所以「剩余」
+ * 只能算出来：用户在设置里填一次总额度，剩余 = 额度 − 累计消耗。累计从
+ * usage-history.json（截至昨天）+ 今天实时值拼出 —— 每天的账历史里都钉着，
+ * 重启不会丢。额度本身也可以随时改（升级了就填新数，剩余按新数重算）。
+ */
+function readQuota(raw) {
+  const credit = Number(raw && raw.credit)
+  return { credit: Number.isFinite(credit) && credit > 0 ? credit : null }
 }
 
 let config = loadConfig()
@@ -59,11 +82,18 @@ function saveConfig(patch) {
   config = {
     installed: { ...config.installed, ...(patch.installed || {}) },
     fields: Array.isArray(patch.fields) ? patch.fields.slice() : config.fields,
+    quota: patch.quota ? readQuota(patch.quota) : config.quota,
   }
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8')
   } catch { /* 写不了就只在内存里生效 */ }
   return config
+}
+
+/** 设置 WorkBuddy 积分总额度。填 0 / 空 = 清掉（不显示剩余）。 */
+function setQuota(patch) {
+  config = saveConfig({ quota: { credit: Number(patch && patch.credit) > 0 ? Number(patch.credit) : null } })
+  return { quota: config.quota }
 }
 
 /* ---------- 一笔账显示成什么 ----------
@@ -85,6 +115,10 @@ function trimZero(s) {
 /**
  * 数字部分的格式。小额必须看得见小数：DSH 一笔调用就是 ¥0.004 上下，
  * 粗一档就只剩「<0.001」，等于把「用多少扣多少」这句话抹掉了。
+ *
+ * 尾部保留到 **1e-6**（不是 <0.001 一刀切）：token 类来源掉血是
+ * `token / 1e6 × 0.01`，一次 5 万 token 的调用只有 0.0006 —— 一刀切成「<0.001」
+ * 会把这类来源全糊成同一个数，「掉了多少」就看不见了。
  */
 function fmtHit(amount) {
   const v = Number(amount)
@@ -92,20 +126,63 @@ function fmtHit(amount) {
   if (v >= 1000) return trimZero(v.toFixed(1))
   if (v >= 1) return trimZero(v.toFixed(2))
   if (v >= 0.001) return trimZero(v.toFixed(3))
-  return '<0.001'
+  if (v >= 0.000001) return trimZero(v.toFixed(6))
+  return '<0.000001'
+}
+
+/* ---------- 掉血（受击时飘的那个数字）----------
+ * 各来源报的量纲不一样（积分 / 人民币 / token），飘在鱼身上之前先**归一成一个数**，
+ * 这样「这笔账有多疼」在不同来源之间才比得了。口径（用户定的）：
+ *
+ *   积分 credit   -> 原样，1 积分 = 1 点血
+ *   人民币 CNY    -> 原样。DSH / 手动记账报的本来就是钱，DeepSeek 的花费也在里面
+ *                    （「用余额表示」），所以不再折算
+ *   token         -> 1,000,000 token = 0.01 点血（即 1 亿 token = 1 点血）
+ *
+ * 注意**只有飘字用这个口径**：受击档位仍然拿各来源自己的量纲比 meta.damage 里的阈值
+ * （见 damageLevel）——否则改一个显示换算就会把「多大的账算暴击」一起改掉。
+ *
+ * 想让 token 类来源更疼一点，只改下面这一个数（改成 10 就是 ×1000）。
+ */
+const TOKEN_BLOOD_PER_MILLION = 0.01
+
+/** 一笔账掉多少血。 */
+function bloodOf(amount, unit) {
+  const v = Number(amount) || 0
+  if (unit === 'CNY' || unit === 'credit') return v
+  return v / 1e6 * TOKEN_BLOOD_PER_MILLION
 }
 
 /**
  * 「-」后面那半句：数值 + 小字单位。
  *   credit -> 0.09（积分）      WorkBuddy 的 credit 就是积分本身
- *   CNY    -> ¥0.004            DSH / 手动记账记的是人民币
- *   token  -> 1.2万（token）    其余来源只报 token
- * 渲染端拿到就直接画，不做任何格式化 —— 和 fields 一个道理。
+ *   CNY    -> ¥0.004            DSH / 手动记账记的是人民币（= 余额口径）
+ *   token  -> 0.0005（积分）     只报 token 的来源按 1 百万 = 0.01 折成血
+ * 插件给了 `label`（如「未命中」）就接到单位后面 —— 一笔账拆成几条时靠它区分。
  */
-function hitOf(amount, unit) {
-  if (unit === 'CNY') return { hitValue: '¥' + fmtHit(amount), hitUnit: '' }
-  if (unit === 'credit') return { hitValue: fmtHit(amount), hitUnit: '积分' }
-  return { hitValue: fmtTokens(amount), hitUnit: 'token' }
+function hitOf(amount, unit, label) {
+  if (unit === 'CNY') return { hitValue: '¥' + fmtHit(amount), hitUnit: label || '' }
+  const tail = label ? ' · ' + label : ''
+  if (unit === 'credit') return { hitValue: fmtHit(amount), hitUnit: '积分' + tail }
+  return { hitValue: fmtHit(bloodOf(amount, 'token')), hitUnit: '积分' + tail }
+}
+
+/* ---------- 速率：连击 ----------
+ * 照 DSH 里那个 dsh-damage-pulse 插件的规则抄的：**两次「重击」（critical）间隔小于
+ * 900ms 就算连击**（它的原话是 `now - lastCriticalAt < 900 ? 'critical-combo' : 'critical-pain'`）。
+ * 连击不是新的档位，而是给渲染端的一个附加信号：动作照旧用最重那一档，
+ * 但红闪和抖动要更狠一档 —— 桌面上的观感就是「连着被揍」。
+ */
+const COMBO_WINDOW_MS = 900
+let lastCriticalAt = 0
+
+/** 这笔账算不算连击（并更新「上一次重击」的时刻）。 */
+function markCombo(at, level) {
+  if (level !== 'critical') return false
+  const ts = Number.isFinite(at) ? at : Date.now()
+  const combo = lastCriticalAt > 0 && ts - lastCriticalAt < COMBO_WINDOW_MS
+  lastCriticalAt = ts
+  return combo
 }
 
 /* ---------- 受击档位 ----------
@@ -157,13 +234,17 @@ function damageLevel(amount, table) {
  * 用户想看的就是后者的节奏感，所以这里只如实逐条排版，拥挤的问题交给渲染端
  * （它会把这些数字排成队一个一个飘出来，见 renderer/pet.js）。
  *
+ * 插件还可以把一笔账**按费用构成拆成好几条**（DSH 就是这么干的：未命中 / 命中 /
+ * 输出各一条，见 providers/dsh.js 的 costParts）—— 拆出来的那几条会各自带上
+ * `label`（如「未命中」），排版成数字后面的小字，桌面上一眼能看出这笔钱花在哪儿。
+ *
  * 唯一做的整理是补上缺省的 `unit`（没报量纲的按 token 算），别让渲染端拿到 undefined。
  */
 function decorateEvents(events) {
   const out = []
   for (const ev of events) {
     const unit = ev.unit || 'token'
-    out.push({ ...ev, unit, ...hitOf(ev.amount, unit) })
+    out.push({ ...ev, unit, ...hitOf(ev.amount, unit, ev.label) })
   }
   return out
 }
@@ -221,6 +302,12 @@ function peakState(ts) {
  * 关掉：WHALEPET_NO_BALANCE=1；也可以用 DEEPSEEK_API_KEY 直接给。
  */
 const BALANCE_DISABLED = process.env.WHALEPET_NO_BALANCE === '1'
+/* 余额校准周期 = 60 秒。和 DSH 里那个 dsh-damage-pulse 一样：它 README 写「查询 DeepSeek
+ * 官方余额并每 60 秒校准；扣费事件到达时先逐笔更新显示余额」。官方结算本身有延迟，
+ * 查得再勤也只是拿到同一个数，60s 足够贴近官网，又不会白打接口。
+ *
+ * 两次校准之间余额**不是冻着的**：每读到一笔 DSH 扣费就先把显示值减掉（见
+ * `balance.spentSince`），所以数字是「实时往下走、每 60s 回官方对齐一次」。 */
 const BALANCE_INTERVAL_MS = 60 * 1000
 const DSH_CREDENTIALS = path.join(os.homedir(), '.dsh', '.credentials.yaml')
 
@@ -230,8 +317,35 @@ const balance = {
   currency: 'CNY',
   available: null,
   fetchedAt: 0,
+  // 自从上次校准以来、从账本里读到的 DSH 花费。显示值 = value - spentSince。
+  // 只计 source === 'dsh' 且量纲是 CNY 的（DeepSeek 余额只被 DeepSeek 的花费扣）；
+  // WorkBuddy 的 credit / 第三方 token 都不动这个数。
+  spentSince: 0,
   error: '',
   inFlight: false,
+}
+
+/** 显示用的余额：官方校准值减去「校准之后实时读到的扣费」。 */
+function liveBalance() {
+  return liveBalanceOf(balance.value, balance.spentSince)
+}
+
+/** 这笔扣费要不要从 DeepSeek 余额里实时减掉。只有 DSH 的人民币花费算 ——
+ *  WorkBuddy 的 credit、第三方 token 都不动 DeepSeek 的余额。 */
+function countsTowardBalance(amount, unit, source) {
+  return source === 'dsh' && unit === 'CNY' && Number(amount) > 0
+}
+
+/**
+ * 显示值 = 官方校准值 − 自校准以来读到并已经扣掉的数。
+ *
+ * 为什么不是直接把 `value` 减下去：官方那个数每 60s 才拿一次，中间这段时间余额
+ * 在桌面上必须是**动的**（否则一笔笔扣费飘过去了、数字却纹丝不动，看着像没生效）。
+ * 下限夹到 0：官方偶发返回 0/欠费时不要显示负数。
+ */
+function liveBalanceOf(value, spentSince) {
+  if (!Number.isFinite(value)) return null
+  return Math.max(0, Number(value) - Number(spentSince || 0))
 }
 
 function readDeepseekKey() {
@@ -286,6 +400,9 @@ function refreshBalance() {
         balance.currency = pick.currency || 'CNY'
         balance.available = obj.is_available === true
         balance.fetchedAt = Date.now()
+        // 校准之后重新开始逐笔累减：官方这个数是「截至它结算时刻」的，之后的扣费
+        // 由账本实时补上。万一本地减多了或官方还没结算，下一次校准会把它拉回来。
+        balance.spentSince = 0
         balance.error = ''
       } catch {
         balance.error = 'parse'
@@ -430,15 +547,44 @@ function todayField(raw, labels) {
   const parts = []
   if (tokens > 0) parts.push(fmtTokens(tokens) + ' token')
   if (credits > 0) parts.push(fmtAmount(credits) + ' 积分')
+
+  // 剩余积分：额度是用户填的快照（WorkBuddy 没有余额接口，见 readQuota 上的注释），
+  // 累计 = 历史账本（截至昨天）+ 今天的实时值。没填额度就整段不加 —— 别显示一个
+  // 「剩余 --」去勾着人填数。
+  const remainLines = []
+  let remainTag = ''
+  if (config.quota && config.quota.credit > 0 && credits > 0) {
+    const spent = creditSpentTotal(Object.keys(raw), credits)
+    const remain = config.quota.credit - spent
+    remainLines.push('WorkBuddy 剩余 ' + fmtAmount(Math.max(0, remain)) + ' / ' + fmtAmount(config.quota.credit)
+      + ' 积分（额度 − 累计 ' + fmtAmount(spent) + '）')
+    remainTag = ' · 余' + fmtAmount(Math.max(0, remain))
+  }
   return [{
     id: 'today',
     label: '今日已用',
-    value: parts.length ? parts.join(' · ') : '--',
+    value: parts.length ? parts.join(' · ') + remainTag : '--',
     tone: parts.length ? '' : 'off',
     title: parts.length
-      ? '今日已用 ' + parts.join(' + ') + '\n按来源：\n' + lines.join('\n')
+      ? '今日已用 ' + parts.join(' + ') + (remainLines.length ? '\n' + remainLines.join('\n') : '')
+        + '\n按来源：\n' + lines.join('\n')
       : '今天还没有读到任何用量',
   }]
+}
+
+/** WorkBuddy 积分的**历史累计**：usage-history.json 里截至昨天的合计 + 今天的实时值。 */
+function creditSpentTotal(sourceIds, todayCredit) {
+  let total = 0
+  try {
+    const doc = JSON.parse(fs.readFileSync(HISTORY_PATH, 'utf8'))
+    const today = bjDayKey(Date.now())
+    for (const [day, e] of Object.entries(doc.days || {})) {
+      if (day === today) continue // 今天的由实时值补足（历史 15 秒才落一次盘，且滞后一拍）
+      const c = Number(e && e.workbuddy && e.workbuddy.credit) || 0
+      total += c
+    }
+  } catch { /* 没有历史账本就只算今天 */ }
+  return total + (Number(todayCredit) || 0)
 }
 
 function peakField(now) {
@@ -506,6 +652,7 @@ function publicConfig() {
     installed: { ...config.installed },
     fields: config.fields.slice(),
     catalog: fieldCatalog(),
+    quota: { ...config.quota },
   }
 }
 
@@ -530,11 +677,27 @@ function poll(now) {
     for (const [id, { def, inst }] of instances) {
       try {
         inst.poll(ts, ev => {
-          // 只定等级：数字和单位原样留着，由主进程排版成「-多少」（见 decorateEvents）。
+          // 档位：**插件自己给了就用它的**。DSH 那个插件是按「这笔钱花在哪儿」定档的
+          // （未命中缓存=重 / 命中=中 / 输出=轻，照 dsh-damage-pulse 的口径），
+          // 只有插件没说的才退回拿金额比 meta.damage 阈值。
+          const level = TIERS.indexOf(ev.level) >= 0
+            ? ev.level
+            : damageLevel(ev.amount, def.meta.damage)
+          // 字号的「大一号」只跟**金额**走（和档位解耦）：档位现在可能是「按种类」定的
+          // （DSH 那笔未命中缓存只有 0.001 元却算重击），要是字号也跟着档位，
+          // 桌面上就会出现「最小的数字字最大」。重击归动画，大小归钱。
+          const crit = (def.meta.damage || []).find(t => t[1] === 'critical')
+          // 余额实时：读到一笔 DSH 的花费就立刻从显示余额里减掉，不等下一次校准。
+          // （账本里的 cost 就是这笔钱从余额里扣掉的数，量纲 CNY。）
+          if (countsTowardBalance(ev.amount, ev.unit || def.meta.unit, ev.source || id)) {
+            balance.spentSince += Number(ev.amount)
+          }
           events.push({
             ...ev,
             source: ev.source || id,
-            level: damageLevel(ev.amount, def.meta.damage),
+            level,
+            big: Number(ev.amount) >= (crit ? crit[0] : Infinity),
+            combo: markCombo(ev.at || ts, level),   // 速率：短时间内连着挨重击 = 连击
           })
         })
       } catch { /* 单个插件崩了不影响桌宠 */ }
@@ -546,7 +709,7 @@ function poll(now) {
     }
   }
 
-  const ctx = { ctxLimit: CTX_LIMIT, fmtTokens, fmtAmount, balance }
+  const ctx = { ctxLimit: CTX_LIMIT, fmtTokens, fmtAmount, balance: { ...balance, live: liveBalance() } }
 
   const raw = {}
   const labels = {}
@@ -584,6 +747,11 @@ function poll(now) {
       balance: {
         supported: balance.supported,
         value: balance.value,
+        // 实时显示值（= 官方校准值 − 校准之后读到的扣费）。信息条上那一格用它，
+        // 而 `value` 保留官方原值 —— 渲染端的「充值 → 复活」靠比较官方值判断，
+        // 拿实时值去比会被自己的逐笔累减带偏（每笔扣费都像余额掉了，校准又像涨了）。
+        live: liveBalance(),
+        spentSince: balance.spentSince,
         currency: balance.currency,
         available: balance.available,
         error: balance.error,
@@ -623,6 +791,13 @@ module.exports = {
   // 一笔账的显示与轻重（单笔文案，不累计）
   hitOf,
   fmtHit,
+  bloodOf,
+  TOKEN_BLOOD_PER_MILLION,
+  COMBO_WINDOW_MS,
+  markCombo,
+  countsTowardBalance,
+  liveBalanceOf,
+  BALANCE_INTERVAL_MS,
   damageLevel,
   TIERS,
   tierOf,
@@ -635,5 +810,6 @@ module.exports = {
   fieldCatalog,
   publicConfig,
   setFields,
+  setQuota,
   reload,
 }

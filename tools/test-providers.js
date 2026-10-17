@@ -13,7 +13,7 @@ const path = require('path')
 // 这个脚本是**只读**的，不会改任何东西，所以不用加锁。但如果另一个测试
 // （test-user-plugin.js）正在临时改写账本，这里的「手动记账 / 今日已用」就会是
 // 它塞进去的测试数据。提醒一句，免得对着假数字排查半天。
-const LEDGER_LOCK = path.join(os.homedir(), '.whalepet', '.ledger-test.lock')
+const LEDGER_LOCK = path.join(os.tmpdir(), 'whalepet-ledger-test.lock')
 if (fs.existsSync(LEDGER_LOCK)) {
   console.log('!! 注意：' + LEDGER_LOCK + ' 存在，可能有另一个测试正在改写账本，')
   console.log('   下面的「手动记账」和「今日已用」数字不可信。\n')

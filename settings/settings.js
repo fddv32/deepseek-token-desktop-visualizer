@@ -44,7 +44,7 @@ const $ = id => document.getElementById(id)
 
 /** 面板状态：主进程下发的三份数据 + 最近一帧用量（按字段 id 索引）。 */
 const state = {
-  app: null,        // 外观：大小 / 形象 / 置顶
+  app: null,        // 外观：大小 / 形象 / 置顶 / 开机自启
   usage: null,      // 字段配置 + 可选字段表
   providers: null,  // 插件清单
   byId: new Map(),  // 字段 id -> 最近一帧的渲染值
@@ -131,6 +131,7 @@ function renderAppearance() {
   }
 
   $('ontop').checked = a.alwaysOnTop
+  $('autostart').checked = a.autoStart
   $('version').textContent = 'v' + a.version
   // 导航栏底那条版本：和「关于」页里那个是同一个值，只是位置不同。
   // 只印版本号 —— 栏顶的 brand 已经写着名字了，这里再来一遍反而挤。
@@ -358,6 +359,22 @@ function renderFields() {
   }
 
   $('field-count').textContent = cfg.fields.length ? cfg.fields.length + ' 项' : '未显示'
+
+  // 积分额度：回显当前值；失焦 / 回车才保存（每敲一个数字就发 IPC 太吵）。
+  // 非法输入（负数 / 非数字）按「清掉」处理 —— 与 usage.setQuota 的口径一致。
+  const q = $('quota-credit')
+  if (document.activeElement !== q) { // 正在输入时不回显覆盖，别跟人抢光标
+    q.value = cfg.quota && cfg.quota.credit ? String(cfg.quota.credit) : ''
+  }
+  if (!q.dataset.wired) {
+    q.dataset.wired = '1'
+    const save = () => {
+      const v = Number(q.value)
+      run(() => window.settings.setQuota({ credit: Number.isFinite(v) && v > 0 ? v : null }))
+    }
+    q.addEventListener('change', save)
+    q.addEventListener('keydown', e => { if (e.key === 'Enter') q.blur() })
+  }
 }
 
 function move(index, delta) {
@@ -538,6 +555,10 @@ $('scale').addEventListener('click', e => {
 
 $('ontop').addEventListener('change', e => {
   run(() => window.settings.setAlwaysOnTop(e.target.checked))
+})
+
+$('autostart').addEventListener('change', e => {
+  run(() => window.settings.setAutoStart(e.target.checked))
 })
 
 $('btn-reload').addEventListener('click', async () => {

@@ -72,7 +72,7 @@ console.log('\n三、老配置换算：actions 开关 -> triggers 名单')
 
 ok('没配过 actions -> 全默认', ids(T.fromLegacy(undefined, ACTIONS).idle) === 'acting,hips,revive')
 ok('空对象 actions -> 全默认（等于没改过）', ids(T.fromLegacy({}, ACTIONS).idle) === 'acting,hips,revive')
-ok('关掉「双手叉腰」-> 它从待机随机里消失',
+ok('关掉「原地晃晃」-> 它从待机随机里消失',
   ids(T.fromLegacy({ hips: false }, ACTIONS).idle) === 'acting,revive',
   ids(T.fromLegacy({ hips: false }, ACTIONS).idle))
 ok('关掉「轻痛」-> 它从扣费反应和单击摸摸里**都**消失',

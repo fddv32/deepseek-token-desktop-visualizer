@@ -18,7 +18,9 @@ const os = require('os')
 const api = require('./api')
 
 const BUILTIN_DIR = __dirname
-const USER_DIR = path.join(os.homedir(), '.whalepet', 'providers')
+// 跟着 api.PLUGIN_HOME 走，别自己再算一次 os.homedir() —— 否则测试沙箱只关得住账本、
+// 关不住插件目录，测试建的那些临时插件照样会落在用户真目录里。
+const USER_DIR = path.join(api.PLUGIN_HOME, '.whalepet', 'providers')
 // index.js / api.js 是宿主自己的模块；下划线开头的（_template.js 等）是模板或草稿，
 // 都不该被当成插件加载。想临时搁置一个插件，把它改名成 _xxx.js 就行。
 const SKIP = new Set(['index.js', 'api.js'])

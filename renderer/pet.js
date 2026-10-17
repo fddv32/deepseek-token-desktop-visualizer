@@ -23,10 +23,13 @@ window.addEventListener('unhandledrejection', ev => {
 })
 
 const petImg = document.getElementById('pet')
+// 上一帧的落脚处（见 index.html 的说明）。它在 #pet 下面，只在切片段时露 90ms。
+const prevImg = document.getElementById('pet-prev')
 const BS = String.fromCharCode(92) // 反斜杠字符
 
 const clips = new Map() // name -> { frames: [{url, ms}], loop, next }
 let assetRoot = ''
+let FRAME_VERSION = '' // 帧目录版本号（见 fileUrl）：素材更新后旧进程不再吃缓存旧帧
 let dragMode = 'poll'
 let useDragPose = false
 
@@ -50,7 +53,10 @@ let isDragging = false
 function fileUrl(rel) {
   const clean = assetRoot.split(BS).join('/').replace(/\/+$/, '')
   const relPath = String(rel).split(BS).join('/')
-  return 'file:///' + clean + '/' + relPath
+  // ?v=帧目录的版本号：素材重新生成后同名文件的 file:// 缓存**不会失效**，
+  // 运行中的桌宠会一直放旧帧（表现为「改了素材桌宠没变」）。版本号 = 帧目录的
+  // 最新 mtime，进程生命周期内恒定（缓存照常命中），重启后版本变、缓存自然失效。
+  return 'file:///' + clean + '/' + relPath + '?v=' + FRAME_VERSION
 }
 
 function firstOf(rels) {
@@ -80,6 +86,7 @@ function toFrames(rels, ms) {
  */
 function buildClips(groups) {
   assetRoot = groups.assetRoot || ''
+  FRAME_VERSION = groups.frameVersion || ''
   const s = groups.states || {}
   const actions = Array.isArray(groups.actions) ? groups.actions : []
   const tr = groups.triggers || {}
@@ -129,6 +136,10 @@ function buildClips(groups) {
     for (const frame of def.frames) {
       const img = new Image()
       img.src = frame.url
+      // 顺手**解码**：只 preload 不 decode 的话，第一次播这一段时 Chromium 可能先画
+      // 一帧空白（对透明窗口来说就是「闪一下白」）。decode() 失败不影响播放（有些
+      // 环境不给解），所以吞掉异常。
+      if (img.decode) img.decode().catch(() => {})
     }
   }
 }
@@ -166,11 +177,38 @@ function pickIdleExtra() {
   return idlePool[idlePool.length - 1].id
 }
 
+/**
+ * 片段切换：把**上一帧**留在下面淡出去，新帧叠在它上面（见 index.html / pet.css）。
+ *
+ * 为什么不是给 #pet 加一次淡入：窗口是透明的，`opacity` 一低就是「整只鱼半透明」，
+ * 桌面背景透上来 —— 用户看到的就是「闪一下」。眨眼和打起精神都是一个片段进、一个片段出，
+ * 各淡一次，所以这两个动作最明显。两层叠着做，两层的 opacity 都从 1 起跳，
+ * 合成后任何一帧都不会出现半透明的那一瞬；顺带还盖住了「新帧没解码完先画一帧空白」。
+ *
+ * 必须在 `petImg.src = 新帧` **之前**调用（这儿先抓住旧 src）。
+ */
+function crossFadeFrom(prevSrc) {
+  if (!prevImg || !prevSrc) return
+  prevImg.src = prevSrc
+  // 先把「不透明」这一态**立刻**定住：直接改 opacity 会被 90ms 的 transition 接住，
+  // 于是从 0 淡到 1、再淡回 0 —— 那反而是一次闪烁。所以先摘掉 transition、强制一次
+  // 重排把 opacity:1 提交下去，再恢复 transition 淡出。
+  prevImg.style.transition = 'none'
+  prevImg.style.opacity = '1'
+  void prevImg.offsetWidth
+  prevImg.style.transition = ''
+  prevImg.style.opacity = '0'
+}
+
 function playClip(name) {
   const clip = clips.get(name)
   if (!clip) return false
+  // 只有「换了一个片段」才交叉淡出。idle 自己重播（resumeIdle）时名字没变，不淡。
+  const changing = !current || current.name !== name
+  const prevSrc = changing ? petImg.getAttribute('src') : null
   current = { name, index: 0, frameStartedAt: performance.now() }
   petImg.src = clip.frames[0].url
+  if (prevSrc) crossFadeFrom(prevSrc)
   return true
 }
 
@@ -396,10 +434,12 @@ const hitQueue = []
 
 function popHit(ev) {
   const el = document.createElement('span')
-  // 字号只跟**金额档位**走（critical 那档写大一号），跟播哪段动画无关 ——
-  // 所以用户把「暴击」那段换掉，数字该大还是大。
-  el.className = 'hit-num' + (ev.level === 'critical' ? ' big' : '')
-  el.textContent = '-' + ev.hitValue
+  // 字号只跟**金额**走（`big` 由主进程按 meta.damage 的暴击线给出），跟播哪段动画、
+  // 跟受击档位都无关 —— 档位可能是「按费用种类」定的（DSH 的未命中缓存很便宜但最疼），
+  // 字号要是跟着档位，桌面上就会出现「最小的数字字最大」。
+  // `heal`（充值复活）走绿色：扣血是红字，回血是绿字，一眼分得开。
+  el.className = 'hit-num' + (ev.big ? ' big' : '') + (ev.heal ? ' heal' : '')
+  el.textContent = (ev.heal ? '' : '-') + ev.hitValue
   if (ev.hitUnit) {
     const u = document.createElement('i')
     u.className = 'u'
@@ -434,6 +474,36 @@ function queueHit(ev) {
   hitPacer.arm()
 }
 
+/* ---------- 余额：充值 = 复活 ----------
+ * 照 DSH 里那个 dsh-damage-pulse 插件的做法（它 15s 轮询一次余额，发现余额变多就
+ * 飘绿色 +x 并播 revive-recharge）。我们这边余额本来就在快照里（fields 的「余额」
+ * 那条 + snapshot.dsh.balance），所以不用另开轮询，比较前后两次就行。
+ *
+ * 为什么把「变多」当复活：扣血是只减不增的，余额唯一会涨的原因就是充值 ——
+ * 那正是「从没血回到有血」，播「打起精神」最贴切（它本来就是一路亮起来）。
+ * 顺带把还在闪的红闪停掉：刚充完值还红着不对劲。
+ *
+ * 只在**真的涨了**的时候动：余额接口抖动、四舍五入回退一点点都不算（允差 1e-9）。
+ */
+let lastBalance = null
+
+function watchBalance(s) {
+  const b = s && s.dsh && s.dsh.balance
+  const v = b && b.available !== false && Number.isFinite(b.value) ? Number(b.value) : null
+  if (v === null) return
+  const prev = lastBalance
+  lastBalance = v
+  if (prev === null || v <= prev + 1e-9) return
+
+  const gain = v - prev
+  // 充值最少也是一分钱，用两位小数足矣；小额（测试/手动）保留三位免得显示成 +0.00
+  const text = gain < 0.01 ? gain.toFixed(4).replace(/0+$/, '').replace(/\.$/, '') : gain.toFixed(2)
+  queueHit({ hitValue: text, hitUnit: (b.currency === 'CNY' || !b.currency) ? '元' : b.currency, heal: true })
+  if (hurtTimer) { clearTimeout(hurtTimer); hurtTimer = null }
+  petImg.classList.remove('hurt', 'crit', 'combo')
+  playClip('revive')
+}
+
 /* ---------- 用量信息条 ---------- */
 
 const usageBox = document.getElementById('usage')
@@ -459,13 +529,22 @@ function renderUsage(s) {
   const off = !s || s.disabled
   const fields = off ? [] : (s.fields || [])
   const key = off ? '#off' : Pills.key(fields)
+  // 一个字段都没勾时把整条收起来。以前会留一个**空心的圆角框**（高度 95px）杵在
+  // 鱼脚下：看着像界面坏了，而且它照占窗口高度、挡住底下的桌面点击。
+  // （字段列表被清空是设置面板里勾掉全部字段的正常结果，不是错误状态。）
+  const hidden = !off && fields.length === 0
+  if (hidden) usageBox.classList.add('hidden')
+  else usageBox.classList.remove('hidden')
   if (key === lastFieldsKey) return
   lastFieldsKey = key
 
-  if (off) {
+  if (hidden) {
+    Pills.empty(usageBox, '')
+  } else if (off) {
     usageBox.classList.add('idle')
     Pills.empty(usageBox, '用量采集已关闭')
   } else {
+    usageBox.classList.remove('idle')
     Pills.render(usageBox, fields)
     usageBox.title = fields.map(f => f.title).filter(Boolean).join('\n')
     markActive()
@@ -515,10 +594,36 @@ function markActive() {
   idleTimer = setTimeout(() => usageBox.classList.add('idle'), 45000)
 }
 
+/* ---------- 掉血：受击那一下的红闪 ----------
+ * 数字由主进程算好（usage.js 的 hitOf，各来源量纲已归一成「血」），这一层只负责
+ * 让鱼红一下 —— 见 pet.css 的 #pet.hurt。同一瞬间连着来几笔时，动画要能**重放**，
+ * 所以先摘类、强制重排、再挂回去（不重排的话类名没变，动画不会重跑）。
+ *
+ * `ev.combo`（900ms 内连着两次重击）再叠一档：闪得更红更久，抖动也更大。
+ */
+let hurtTimer = null
+
+function flashHurt(level, combo) {
+  const crit = level === 'critical'
+  petImg.classList.remove('hurt', 'crit', 'combo')
+  void petImg.offsetWidth
+  petImg.classList.add('hurt')
+  if (crit) petImg.classList.add('crit')
+  if (crit && combo) petImg.classList.add('combo')
+  if (hurtTimer) clearTimeout(hurtTimer)
+  hurtTimer = setTimeout(() => {
+    hurtTimer = null
+    petImg.classList.remove('hurt', 'crit', 'combo')
+  }, crit ? (combo ? 480 : 380) : 240)
+}
+
 function onUsageEvent(ev) {
   markActive()
   usageBox.classList.add('pulse')
   setTimeout(() => usageBox.classList.remove('pulse'), 900)
+
+  // 金额是 0 的账（比如只记了 token 没记钱）不掉血也不飘字 —— 飘一个「-0」更糟
+  if (ev && ev.hitValue && ev.hitValue !== '0') flashHurt(ev.level, ev.combo)
 
   // 数字**立刻**进队，不等下面那个 320ms 的合并窗口：它是「这笔账花了多少」的收据，
   // 拖不拖动、有没有动画可播，都跟它没关系。（排队只是错开出场时间，见 queueHit。）
@@ -558,7 +663,7 @@ function onUsageEvent(ev) {
 /* ---------- 启动 ---------- */
 
 window.whalePet.onDragMode(applyDragMode)
-window.whalePet.onUsage(renderUsage)
+window.whalePet.onUsage(s => { watchBalance(s); renderUsage(s) })
 window.whalePet.onUsageEvent(onUsageEvent)
 
 /**
